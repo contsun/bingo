@@ -297,6 +297,7 @@ impl HostApi for Fleet {
         Ok(Attachment {
             snapshot: self.state(&id),
             session: id,
+            history: None,
             events: Box::pin(futures::stream::empty()),
             handle: SessionHandle(Arc::new(Deaf)),
         })

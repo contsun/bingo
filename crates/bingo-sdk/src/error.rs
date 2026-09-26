@@ -13,6 +13,8 @@ pub enum ErrorCode {
     InteractionClosed,
     NotReady,
     StaleGeneration,
+    /// A negotiated RPC byte or pin budget cannot carry this value safely.
+    ProtocolLimit,
     NotInitialized,
     InvalidInput,
     PermissionDenied,
@@ -44,6 +46,7 @@ impl ErrorCode {
             ErrorCode::InteractionClosed => "INTERACTION_CLOSED",
             ErrorCode::NotReady => "NOT_READY",
             ErrorCode::StaleGeneration => "STALE_GENERATION",
+            ErrorCode::ProtocolLimit => "PROTOCOL_LIMIT",
             ErrorCode::NotInitialized => "NOT_INITIALIZED",
             ErrorCode::InvalidInput => "INVALID_INPUT",
             ErrorCode::PermissionDenied => "PERMISSION_DENIED",
@@ -90,6 +93,7 @@ mod tests {
     fn the_wire_form_and_the_str_form_agree() {
         for code in [
             ErrorCode::SessionNotFound,
+            ErrorCode::ProtocolLimit,
             ErrorCode::NotFound,
             ErrorCode::InteractionClosed,
             ErrorCode::TurnBudgetExhausted,

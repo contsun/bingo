@@ -88,6 +88,15 @@ pub enum SessionChange {
     Title(String),
 }
 
+/// How a bounded tree attachment treats the descendants' existing journals.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum TreeBackfill {
+    /// Start each child's stream at its atomic current cut. Older child content
+    /// requires a direct open; never imply the tree projection is complete.
+    LiveOnly,
+}
+
 /// What an attachment carries beyond the session itself (ADR-0010 §3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", default)]
@@ -96,12 +105,34 @@ pub struct OpenOptions {
     /// `session`; the handle answers an interaction wherever in the tree it
     /// was opened.
     pub children: bool,
+    /// Optional byte budget for the entire JSON-RPC open response. Absent
+    /// retains the exact legacy full snapshot. Zero is invalid, never "all".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_snapshot_bytes: Option<usize>,
+    /// Only meaningful when `children` and `max_snapshot_bytes` are set.
+    /// Absent retains the legacy full descendant replay.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tree_backfill: Option<TreeBackfill>,
 }
 
 impl OpenOptions {
     pub fn with_children() -> Self {
-        Self { children: true }
+        Self {
+            children: true,
+            ..Self::default()
+        }
     }
+}
+
+/// A bounded snapshot's missing transcript prefix. `before: None` together
+/// with `has_more: true` represents an empty window; the first history page
+/// starts at the current end rather than at a fabricated item id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenHistory {
+    pub before: Option<ItemId>,
+    pub has_more: bool,
+    pub generation: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -198,6 +229,13 @@ pub struct HistoryPage {
     pub before: Option<ItemId>,
     #[serde(default)]
     pub limit: usize,
+    /// Optional byte budget for the whole JSON-RPC response; absent preserves
+    /// `limit == 0` meaning all, not an implicit bounded page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_bytes: Option<usize>,
+    /// Reject a stale page after a rewind/compaction rather than mixing views.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generation: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -207,6 +245,21 @@ pub struct HistoryChunk {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next: Option<ItemId>,
     pub generation: u64,
+    /// This item alone cannot fit the requested page. Fetch it explicitly in
+    /// parts before following `next`, which excludes that item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oversized: Option<OversizedItem>,
+}
+
+/// The actor's factual observation; only the RPC server can add a
+/// connection-scoped availability token after pinning an immutable Item.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OversizedItem {
+    pub id: ItemId,
+    pub total_bytes: usize,
+    /// FNV-1a 64 of the exact serialized Item UTF-8, lowercase hex.
+    pub checksum: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -266,6 +319,15 @@ pub trait SessionPort: Send + Sync {
         activation: Activation,
     );
     async fn history(&self, page: HistoryPage) -> Result<HistoryChunk, KernelError>;
+    /// Obtain one actor-cut value for a bounded transport to pin immutably.
+    /// Never call this once per wire part: an item may change without a history
+    /// generation bump, and reserializing it per part could mix versions.
+    async fn item_for_pin(&self, _id: &ItemId, _generation: u64) -> Result<Item, KernelError> {
+        Err(KernelError::new(
+            ErrorCode::InvalidInput,
+            "this session does not support pinned items",
+        ))
+    }
     /// Frames with `seq > since`, then live.
     async fn events_since(&self, since: Seq) -> Result<FrameStream, KernelError>;
 }
@@ -302,6 +364,10 @@ impl SessionHandle {
         self.0.history(page).await
     }
 
+    pub async fn item_for_pin(&self, id: &ItemId, generation: u64) -> Result<Item, KernelError> {
+        self.0.item_for_pin(id, generation).await
+    }
+
     pub async fn events_since(&self, since: Seq) -> Result<FrameStream, KernelError> {
         self.0.events_since(since).await
     }
@@ -311,6 +377,9 @@ impl SessionHandle {
 pub struct Attachment {
     pub session: SessionId,
     pub snapshot: SessionState,
+    /// Present only on a bounded attach; identifies the omitted transcript
+    /// prefix without moving the snapshot's atomic event cut.
+    pub history: Option<OpenHistory>,
     pub events: FrameStream,
     pub handle: SessionHandle,
 }

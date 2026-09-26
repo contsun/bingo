@@ -90,6 +90,7 @@ impl SessionPort for TestSession {
             items: Vec::new(),
             next: None,
             generation: 0,
+            oversized: None,
         })
     }
 
@@ -207,6 +208,7 @@ impl HostApi for TestHost {
             return Ok(Attachment {
                 session: child_id(),
                 snapshot: SessionState::new(child_summary("reviewer")),
+                history: None,
                 events: Box::pin(futures::stream::empty()),
                 handle: SessionHandle(Arc::clone(&self.child) as Arc<dyn SessionPort>),
             });
@@ -214,6 +216,7 @@ impl HostApi for TestHost {
         Ok(Attachment {
             session: SessionId::from_raw("ses_1"),
             snapshot: state(),
+            history: None,
             events: self.session.live(),
             handle: SessionHandle(Arc::clone(&self.session) as Arc<dyn SessionPort>),
         })

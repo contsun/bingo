@@ -79,6 +79,7 @@ impl Runner {
             snapshot,
             events,
             handle,
+            ..
         } = attachment;
         let deliverer = Deliverer::new(adapter.limits().clone(), gate, key.clone());
         directory.sit(

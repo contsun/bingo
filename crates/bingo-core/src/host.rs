@@ -708,12 +708,14 @@ impl HostApi for Host {
             other => self.mailbox_for(other).await?,
         };
         if options.children {
-            return tree::attach(self.weak.clone(), &self.gateway, mailbox, who).await;
+            return tree::attach(self.weak.clone(), &self.gateway, mailbox, who, options).await;
         }
-        let (snapshot, events) = mailbox.attach().await?;
+        let (snapshot, history, events) =
+            mailbox.attach_bounded(options.max_snapshot_bytes).await?;
         Ok(Attachment {
             session: mailbox.id().clone(),
             snapshot,
+            history,
             events,
             handle: mailbox.port(who),
         })

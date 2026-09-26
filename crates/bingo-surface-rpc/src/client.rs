@@ -388,7 +388,18 @@ impl HostApi for RemoteKernel {
         _who: ClientIdentity,
         options: OpenOptions,
     ) -> Result<Attachment, KernelError> {
-        let OpenResult { session, snapshot }: OpenResult = self
+        if options.max_snapshot_bytes.is_some() || options.tree_backfill.is_some() {
+            return Err(KernelError::new(
+                ErrorCode::InvalidInput,
+                "RemoteKernel cannot represent incomplete event references; use a ref-aware RPC client",
+            ));
+        }
+        let OpenResult {
+            session,
+            snapshot,
+            history,
+            ..
+        }: OpenResult = self
             .connection
             .call(name::SESSION_OPEN, &OpenParams { selector, options })
             .await?;
@@ -400,6 +411,7 @@ impl HostApi for RemoteKernel {
         Ok(Attachment {
             session,
             snapshot,
+            history,
             events,
             handle: SessionHandle(Arc::new(handle)),
         })
@@ -542,6 +554,12 @@ impl SessionPort for RemoteSession {
     }
 
     async fn history(&self, page: HistoryPage) -> Result<HistoryChunk, KernelError> {
+        if page.max_bytes.is_some() {
+            return Err(KernelError::new(
+                ErrorCode::InvalidInput,
+                "RemoteKernel cannot represent incomplete history; use a ref-aware RPC client",
+            ));
+        }
         self.connection
             .call(
                 name::SESSION_HISTORY,
