@@ -402,8 +402,8 @@ async fn a_session_written_by_a_print_run_reopens_by_id_with_its_items() {
     let page = attachment
         .handle
         .history(HistoryPage {
-            before: None,
             limit: 1,
+            ..HistoryPage::default()
         })
         .await
         .unwrap();
@@ -414,6 +414,7 @@ async fn a_session_written_by_a_print_run_reopens_by_id_with_its_items() {
         .history(HistoryPage {
             before: page.next,
             limit: 10,
+            ..HistoryPage::default()
         })
         .await
         .unwrap();

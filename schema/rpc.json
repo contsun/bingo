@@ -339,6 +339,59 @@
         "kind"
       ]
     },
+    "ChildrenParams": {
+      "type": "object",
+      "properties": {
+        "parent": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Budget for the entire JSON-RPC response. Required on this opt-in method."
+        }
+      },
+      "required": [
+        "parent",
+        "maxBytes"
+      ],
+      "description": "Discover a tree's old children after a live-only attachment without\nserializing unbounded child summaries or silently omitting descendants.\nResults are sorted by stable id, `after` is exclusive, and `next` is the\nlast included id when more remain. An empty result terminates traversal."
+    },
+    "ChildrenResult": {
+      "type": "object",
+      "properties": {
+        "children": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SessionId"
+          }
+        },
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "children"
+      ]
+    },
     "ClientIdentity": {
       "type": "object",
       "properties": {
@@ -682,6 +735,11 @@
             "TURN_BUDGET_EXHAUSTED",
             "INTERNAL"
           ]
+        },
+        {
+          "type": "string",
+          "const": "PROTOCOL_LIMIT",
+          "description": "A negotiated RPC byte or pin budget cannot carry this value safely."
         },
         {
           "type": "string",
@@ -1273,6 +1331,96 @@
       ],
       "description": "`event`: one frame, and — under a tree attachment (ADR-0010 §3) — the root\nit was opened through, which is the stream the client routes it to. A\nframe of the root itself carries no `root`, so the line is the frame verbatim."
     },
+    "EventRefParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "root": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seq": {
+          "$ref": "#/$defs/Seq"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "eventType": {
+          "type": "string"
+        },
+        "item": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "interaction": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InteractionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "intent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/IntentId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "stateUncertain": {
+          "type": "boolean",
+          "description": "A missing permission, interaction, queue or lifecycle frame may affect\nsafe actions; the host must not assume its prior state is still certain."
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "availability": {
+          "$ref": "#/$defs/ReferenceAvailability"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "checksum": {
+          "type": "string",
+          "description": "FNV-1a 64 of the original EventParams JSON UTF-8, lowercase hex."
+        }
+      },
+      "required": [
+        "session",
+        "seq",
+        "messageId",
+        "eventType",
+        "stateUncertain",
+        "generation",
+        "availability",
+        "totalBytes",
+        "checksum"
+      ],
+      "description": "Opt-in transport reference only, never a synthetic SDK event. The consumer\nrecords an incomplete seq and does not claim the missing event was applied.\nLater small events may still arrive; explicitly requesting `eventPart`\nyields the *original* serialized EventParams for viewing or export."
+    },
     "EventsParams": {
       "type": "object",
       "properties": {
@@ -1363,6 +1511,86 @@
         }
       ]
     },
+    "GatewaySessionHeadParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        }
+      },
+      "required": [
+        "session"
+      ]
+    },
+    "GatewaySubscribeParams": {
+      "type": "object",
+      "properties": {
+        "maxBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "Absent keeps legacy verbatim `gateway/event`. A bounded subscriber\nreceives `gateway/sessionHead` for oversized SessionCreated summaries\nand refreshes via `session/listHeads` before trusting the new id."
+        }
+      }
+    },
+    "HeadField": {
+      "type": "string",
+      "enum": [
+        "key",
+        "title",
+        "model",
+        "provider"
+      ]
+    },
+    "HeadFilter": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cwd": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "description": "`SessionFilter.limit` is deliberately absent: pagination walks every\nmatched id. The caller may stop displaying after its own chosen count,\nbut must not mistake that for the store being exhausted."
+    },
+    "HeadOmission": {
+      "type": "object",
+      "properties": {
+        "field": {
+          "$ref": "#/$defs/HeadField"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0,
+          "description": "Original scalar string's UTF-8 byte length (no JSON quotes)."
+        },
+        "reason": {
+          "type": "string",
+          "description": "`openSessionToReadField`: direct-open a verified id and use its pinned\nsnapshot field reference. A list never pins hundreds of large titles."
+        }
+      },
+      "required": [
+        "field",
+        "totalBytes",
+        "reason"
+      ]
+    },
     "HistoryChunk": {
       "type": "object",
       "properties": {
@@ -1386,6 +1614,17 @@
           "type": "integer",
           "format": "uint64",
           "minimum": 0
+        },
+        "oversized": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OversizedItem"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "This item alone cannot fit the requested page. Fetch it explicitly in\nparts before following `next`, which excludes that item."
         }
       },
       "required": [
@@ -1411,6 +1650,24 @@
           "format": "uint",
           "minimum": 0,
           "default": 0
+        },
+        "maxBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "Optional byte budget for the whole JSON-RPC response; absent preserves\n`limit == 0` meaning all, not an implicit bounded page."
+        },
+        "generation": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0,
+          "description": "Reject a stale page after a rewind/compaction rather than mixing views."
         }
       }
     },
@@ -1430,6 +1687,47 @@
       "required": [
         "session"
       ]
+    },
+    "HistoryResult": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Item"
+          }
+        },
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "oversized": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WireOversizedItem"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "items",
+        "generation"
+      ],
+      "description": "The SDK's history facts, with connection-scoped availability added only\nafter the RPC server has admitted and pinned the exact oversized item."
     },
     "Image": {
       "type": "object",
@@ -2279,6 +2577,43 @@
       "type": "string",
       "description": "One unit in the transcript order."
     },
+    "ItemPartParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "item": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        },
+        "token": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "maxBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "session",
+        "item",
+        "generation",
+        "token",
+        "offset",
+        "maxBytes"
+      ]
+    },
     "ItemStatus": {
       "type": "string",
       "enum": [
@@ -2345,6 +2680,57 @@
         "info",
         "warn",
         "error"
+      ]
+    },
+    "ListHeadsParams": {
+      "type": "object",
+      "properties": {
+        "filter": {
+          "$ref": "#/$defs/HeadFilter",
+          "default": {}
+        },
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "maxBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "maxBytes"
+      ]
+    },
+    "ListHeadsResult": {
+      "type": "object",
+      "properties": {
+        "heads": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/SummaryHead"
+          }
+        },
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SessionId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "heads"
       ]
     },
     "ListParams": {
@@ -2467,6 +2853,64 @@
         }
       ]
     },
+    "OmittedField": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "availability": {
+          "$ref": "#/$defs/ReferenceAvailability"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "checksum": {
+          "type": "string",
+          "description": "FNV-1a 64 of the serialized UTF-8 value, lowercase 16-digit hex."
+        }
+      },
+      "required": [
+        "path",
+        "availability",
+        "totalBytes",
+        "checksum"
+      ],
+      "description": "The exact serialized JSON field value is pinned on this RPC connection.\nThe token is admitted only for its session and expires on close/reopen."
+    },
+    "OpenHistory": {
+      "type": "object",
+      "properties": {
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ItemId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "hasMore": {
+          "type": "boolean"
+        },
+        "generation": {
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "hasMore",
+        "generation"
+      ],
+      "description": "A bounded snapshot's missing transcript prefix. `before: None` together\nwith `has_more: true` represents an empty window; the first history page\nstarts at the current end rather than at a fabricated item id."
+    },
     "OpenOptions": {
       "type": "object",
       "properties": {
@@ -2474,6 +2918,26 @@
           "type": "boolean",
           "description": "The frames of every live descendant too, each stamped with its own\n`session`; the handle answers an interaction wherever in the tree it\nwas opened.",
           "default": false
+        },
+        "maxSnapshotBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0,
+          "description": "Optional byte budget for the entire JSON-RPC open response. Absent\nretains the exact legacy full snapshot. Zero is invalid, never \"all\"."
+        },
+        "treeBackfill": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TreeBackfill"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Only meaningful when `children` and `max_snapshot_bytes` are set.\nAbsent retains the legacy full descendant replay."
         }
       },
       "description": "What an attachment carries beyond the session itself (ADR-0010 §3)."
@@ -2502,7 +2966,34 @@
           "$ref": "#/$defs/SessionId"
         },
         "snapshot": {
-          "$ref": "#/$defs/SessionState"
+          "$ref": "#/$defs/SessionState",
+          "description": "A true atomic cut. On bounded opens the transcript is only a preview;\nomitted fields are explicit, and trusted id/cwd/seq/status remain here."
+        },
+        "history": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/OpenHistory"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "tree": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/TreeSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "omittedFields": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/OmittedField"
+          }
         }
       },
       "required": [
@@ -2534,6 +3025,29 @@
       ],
       "description": "Who submitted the input, as every surface records it."
     },
+    "OversizedItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "checksum": {
+          "type": "string",
+          "description": "FNV-1a 64 of the exact serialized Item UTF-8, lowercase hex."
+        }
+      },
+      "required": [
+        "id",
+        "totalBytes",
+        "checksum"
+      ],
+      "description": "The actor's factual observation; only the RPC server can add a\nconnection-scoped availability token after pinning an immutable Item."
+    },
     "ParentLink": {
       "type": "object",
       "properties": {
@@ -2555,6 +3069,34 @@
         "session"
       ],
       "description": "Where a child hangs in the tree: its parent, and the tool call that\nspawned it when one did (ADR-0011 §3)."
+    },
+    "PinnedPartParams": {
+      "type": "object",
+      "properties": {
+        "session": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "token": {
+          "type": "string"
+        },
+        "offset": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "maxBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "session",
+        "token",
+        "offset",
+        "maxBytes"
+      ],
+      "description": "A connection-local pinned value is never accessible from a different\nsession, even when a caller learns its token."
     },
     "Preview": {
       "oneOf": [
@@ -2714,6 +3256,45 @@
         "origin"
       ]
     },
+    "ReferenceAvailability": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "token": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "available"
+            }
+          },
+          "required": [
+            "kind",
+            "token"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "reason": {
+              "type": "string"
+            },
+            "kind": {
+              "type": "string",
+              "const": "unavailable"
+            }
+          },
+          "required": [
+            "kind",
+            "reason"
+          ]
+        }
+      ],
+      "description": "A ref-aware RPC client sees either a token backed by a real immutable pin\nor an explicit resource-limit reason. The strict variants make generated\nZod validators reject both a token and a reason in one value."
+    },
     "ResolvedBy": {
       "oneOf": [
         {
@@ -2787,6 +3368,32 @@
       "format": "uint64",
       "minimum": 0,
       "description": "Position of a frame in a session's journal. Durable frames are gapless;\nclients only require monotonic order."
+    },
+    "SerializedPart": {
+      "type": "object",
+      "properties": {
+        "data": {
+          "type": "string",
+          "description": "UTF-8 JSON slice; offsets count bytes in the original unescaped JSON."
+        },
+        "nextOffset": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint",
+          "minimum": 0
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "data",
+        "totalBytes"
+      ]
     },
     "SessionFilter": {
       "type": "object",
@@ -3230,6 +3837,86 @@
         "input"
       ]
     },
+    "SummaryHead": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/SessionId"
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "parent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ParentLink"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "driver": {
+          "$ref": "#/$defs/Driver"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "updatedAt": {
+          "type": "string"
+        },
+        "busy": {
+          "type": "boolean"
+        },
+        "messages": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0
+        },
+        "key": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "model": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "omitted": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/HeadOmission"
+          }
+        }
+      },
+      "required": [
+        "id",
+        "cwd",
+        "driver",
+        "createdAt",
+        "updatedAt",
+        "busy"
+      ],
+      "description": "A safe, bounded summary projection for workspace ownership checks and\nsidebar discovery. A missing key is *not* a keyless session when an\nomission names `key`; callers must direct-open by trusted id to classify."
+    },
     "Tone": {
       "oneOf": [
         {
@@ -3276,6 +3963,16 @@
       ],
       "description": "What a tool returned: the parts the model sees, plus what a person sees\ninstead when the tool has something better than the text (ADR-0013 §2)."
     },
+    "TreeBackfill": {
+      "oneOf": [
+        {
+          "type": "string",
+          "const": "liveOnly",
+          "description": "Start each child's stream at its atomic current cut. Older child content\nrequires a direct open; never imply the tree projection is complete."
+        }
+      ],
+      "description": "How a bounded tree attachment treats the descendants' existing journals."
+    },
     "TreeNode": {
       "type": "object",
       "properties": {
@@ -3301,6 +3998,22 @@
       },
       "required": [
         "label"
+      ]
+    },
+    "TreeSnapshot": {
+      "type": "object",
+      "properties": {
+        "backfill": {
+          "$ref": "#/$defs/TreeBackfill"
+        },
+        "descendantsComplete": {
+          "type": "boolean",
+          "description": "A tree attachment with no old descendant replay is never a complete\nhistory projection; discover children by parent and open them directly."
+        }
+      },
+      "required": [
+        "backfill",
+        "descendantsComplete"
       ]
     },
     "TurnId": {
@@ -3739,6 +4452,31 @@
           "description": "A word this sdk does not have (ADR-0038 §1): `kind` is the emitter's\nown name for the element, namespaced by its plugin (`demo.sparkline`),\n`data` is whatever shape that plugin documents, and `fold` is the text\nevery surface that has not learned the kind shows instead.\n\nIt is also where an unknown `kind` off the wire lands, and then `data`\nis the whole node as it arrived — nothing said is lost, whether or not\nthis sdk has the word for it."
         }
       ]
+    },
+    "WireOversizedItem": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/ItemId"
+        },
+        "totalBytes": {
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0
+        },
+        "checksum": {
+          "type": "string"
+        },
+        "availability": {
+          "$ref": "#/$defs/ReferenceAvailability"
+        }
+      },
+      "required": [
+        "id",
+        "totalBytes",
+        "checksum",
+        "availability"
+      ]
     }
   },
   "methods": {
@@ -3764,6 +4502,22 @@
       },
       "result": {
         "$ref": "#/$defs/ListResult"
+      }
+    },
+    "session/listHeads": {
+      "params": {
+        "$ref": "#/$defs/ListHeadsParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ListHeadsResult"
+      }
+    },
+    "session/children": {
+      "params": {
+        "$ref": "#/$defs/ChildrenParams"
+      },
+      "result": {
+        "$ref": "#/$defs/ChildrenResult"
       }
     },
     "session/open": {
@@ -3819,7 +4573,31 @@
         "$ref": "#/$defs/HistoryParams"
       },
       "result": {
-        "$ref": "#/$defs/HistoryChunk"
+        "$ref": "#/$defs/HistoryResult"
+      }
+    },
+    "session/itemPart": {
+      "params": {
+        "$ref": "#/$defs/ItemPartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SerializedPart"
+      }
+    },
+    "session/fieldPart": {
+      "params": {
+        "$ref": "#/$defs/PinnedPartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SerializedPart"
+      }
+    },
+    "session/eventPart": {
+      "params": {
+        "$ref": "#/$defs/PinnedPartParams"
+      },
+      "result": {
+        "$ref": "#/$defs/SerializedPart"
       }
     },
     "session/events": {
@@ -3864,7 +4642,7 @@
     },
     "gateway/subscribe": {
       "params": {
-        "$ref": "#/$defs/Empty"
+        "$ref": "#/$defs/GatewaySubscribeParams"
       },
       "result": {
         "$ref": "#/$defs/Empty"
@@ -3877,9 +4655,19 @@
         "$ref": "#/$defs/EventParams"
       }
     },
+    "eventRef": {
+      "params": {
+        "$ref": "#/$defs/EventRefParams"
+      }
+    },
     "gateway/event": {
       "params": {
         "$ref": "#/$defs/GatewayEvent"
+      }
+    },
+    "gateway/sessionHead": {
+      "params": {
+        "$ref": "#/$defs/GatewaySessionHeadParams"
       }
     }
   }

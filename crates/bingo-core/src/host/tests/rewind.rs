@@ -78,6 +78,7 @@ async fn a_rewind_appends_the_item_and_takes_the_turn_out_of_every_fold() {
         state.apply(frame);
     }
     assert_eq!(state.items.len(), 4, "two asks and two answers");
+    let removed_cursor = state.items[2].id.clone();
 
     let dropped = host.rewind(&session, &second).await.expect("a rewind");
     assert_eq!(dropped, 2, "the ask and the answer of the second turn");
@@ -112,6 +113,30 @@ async fn a_rewind_appends_the_item_and_takes_the_turn_out_of_every_fold() {
         "the client's fold dropped what the rewind undid: {bodies:?}"
     );
     assert_eq!(state.history_generation, 1);
+    let stale = attachment
+        .handle
+        .history(HistoryPage {
+            before: Some(removed_cursor),
+            limit: 10,
+            max_bytes: Some(4096),
+            generation: Some(state.history_generation),
+        })
+        .await
+        .expect_err("the removed item is no longer a bounded cursor");
+    assert_eq!(stale.code, ErrorCode::StaleGeneration);
+    assert!(
+        attachment
+            .handle
+            .history(HistoryPage {
+                before: None,
+                limit: 10,
+                max_bytes: Some(4096),
+                generation: Some(state.history_generation),
+            })
+            .await
+            .is_ok(),
+        "a current cursor remains usable"
+    );
 
     turn(&mut attachment, "third ask").await;
     let requests = provider.requests();

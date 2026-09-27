@@ -233,6 +233,7 @@ impl<'a> Attached<'a> {
             snapshot,
             events,
             handle,
+            ..
         } = attachment;
         renderer.open(&snapshot, &mut *out).map_err(stdio_error)?;
         Ok(Self {
@@ -957,6 +958,7 @@ pub(crate) mod tests {
                 items: Vec::new(),
                 next: None,
                 generation: 0,
+                oversized: None,
             })
         }
 
@@ -1016,6 +1018,7 @@ pub(crate) mod tests {
             Ok(Attachment {
                 session: SessionId::from_raw("ses_1"),
                 snapshot: session_state(),
+                history: None,
                 events: self.session.stream(),
                 handle: SessionHandle(Arc::clone(&self.session) as Arc<dyn SessionPort>),
             })

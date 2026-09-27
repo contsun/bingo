@@ -47,7 +47,11 @@ pub(crate) enum Msg {
     },
     Answer(Answered),
     Attach {
-        reply: oneshot::Sender<(SessionState, FrameStream)>,
+        max_bytes: Option<usize>,
+        reply: oneshot::Sender<(SessionState, Option<OpenHistory>, FrameStream)>,
+    },
+    TailEvents {
+        reply: oneshot::Sender<(Seq, FrameStream)>,
     },
     EventsSince {
         since: Seq,
@@ -55,7 +59,12 @@ pub(crate) enum Msg {
     },
     History {
         page: HistoryPage,
-        reply: oneshot::Sender<HistoryChunk>,
+        reply: oneshot::Sender<Result<HistoryChunk, KernelError>>,
+    },
+    ItemForPin {
+        id: ItemId,
+        generation: u64,
+        reply: oneshot::Sender<Result<Item, KernelError>>,
     },
     Summary {
         reply: oneshot::Sender<SessionSummary>,
@@ -261,9 +270,23 @@ impl Mailbox {
         }));
     }
 
-    /// A snapshot and every frame after it.
+    /// A full snapshot and every frame after it, for legacy callers.
     pub async fn attach(&self) -> Result<(SessionState, FrameStream), KernelError> {
-        self.call(|reply| Msg::Attach { reply }).await
+        let (snapshot, _, events) = self.attach_bounded(None).await?;
+        Ok((snapshot, events))
+    }
+
+    /// An atomic snapshot cut with an optional bounded transcript window.
+    pub async fn attach_bounded(
+        &self,
+        max_bytes: Option<usize>,
+    ) -> Result<(SessionState, Option<OpenHistory>, FrameStream), KernelError> {
+        self.call(|reply| Msg::Attach { max_bytes, reply }).await
+    }
+
+    /// Follow only frames published after this actor's current sequence.
+    pub async fn tail_events(&self) -> Result<(Seq, FrameStream), KernelError> {
+        self.call(|reply| Msg::TailEvents { reply }).await
     }
 
     pub async fn events_since(&self, since: Seq) -> Result<FrameStream, KernelError> {
@@ -271,7 +294,16 @@ impl Mailbox {
     }
 
     pub async fn history(&self, page: HistoryPage) -> Result<HistoryChunk, KernelError> {
-        self.call(|reply| Msg::History { page, reply }).await
+        self.call(|reply| Msg::History { page, reply }).await?
+    }
+
+    pub async fn item_for_pin(&self, id: ItemId, generation: u64) -> Result<Item, KernelError> {
+        self.call(|reply| Msg::ItemForPin {
+            id,
+            generation,
+            reply,
+        })
+        .await?
     }
 
     pub async fn summary(&self) -> Result<SessionSummary, KernelError> {
@@ -385,6 +417,10 @@ impl SessionPort for Port {
 
     async fn history(&self, page: HistoryPage) -> Result<HistoryChunk, KernelError> {
         self.mailbox.history(page).await
+    }
+
+    async fn item_for_pin(&self, id: &ItemId, generation: u64) -> Result<Item, KernelError> {
+        self.mailbox.item_for_pin(id.clone(), generation).await
     }
 
     async fn events_since(&self, since: Seq) -> Result<FrameStream, KernelError> {

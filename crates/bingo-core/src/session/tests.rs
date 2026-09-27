@@ -6,6 +6,7 @@ use serde_json::json;
 use super::*;
 use crate::test_support::*;
 
+mod bounded;
 mod busy;
 mod commands;
 mod completion;
@@ -533,6 +534,7 @@ async fn history_pages_backwards_from_the_newest_item() {
         .history(HistoryPage {
             before: None,
             limit: 2,
+            ..HistoryPage::default()
         })
         .await
         .unwrap();
@@ -543,6 +545,7 @@ async fn history_pages_backwards_from_the_newest_item() {
         .history(HistoryPage {
             before: Some(next),
             limit: 10,
+            ..HistoryPage::default()
         })
         .await
         .unwrap();

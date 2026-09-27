@@ -141,6 +141,7 @@ impl HostApi for Journals {
         Ok(Attachment {
             session: id,
             snapshot,
+            history: None,
             events: Box::pin(futures::stream::empty()),
             handle: SessionHandle(Arc::new(Deaf)),
         })

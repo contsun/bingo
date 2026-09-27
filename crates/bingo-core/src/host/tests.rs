@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use futures::StreamExt;
+use futures::{FutureExt, StreamExt};
 use serde_json::json;
 
 use super::*;
@@ -306,6 +306,7 @@ async fn open_create_runs_a_turn_and_the_session_is_findable_afterwards() {
         mut snapshot,
         mut events,
         handle,
+        ..
     } = host
         .open(
             SessionSelector::Create {

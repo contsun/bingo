@@ -39,7 +39,7 @@ impl Running {
         let run = TurnRun {
             turn: turn.clone(),
             history: actor.journal.clone(),
-            generation: actor.generation,
+            generation: actor.state.history_generation,
             cancel: cancel.clone(),
             kind,
         };

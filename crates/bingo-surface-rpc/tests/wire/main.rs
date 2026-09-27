@@ -6,6 +6,7 @@
 // out, the way `crates/bingo/tests/cli/main.rs` spells it out.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+mod bounded;
 mod host;
 
 use std::time::Duration;
@@ -37,6 +38,7 @@ struct Wire {
     writer: FramedWrite<WriteHalf<DuplexStream>, tokio_util::codec::LinesCodec>,
     served: JoinHandle<Result<Exit, KernelError>>,
     next: i64,
+    line_bytes: Vec<usize>,
 }
 
 impl Wire {
@@ -49,6 +51,7 @@ impl Wire {
             writer: FramedWrite::new(client_writer, codec::lines()),
             served: tokio::spawn(serve(host, server_reader, server_writer)),
             next: 1,
+            line_bytes: Vec::new(),
         }
     }
 
@@ -95,6 +98,7 @@ impl Wire {
             .expect("the server answers within five seconds")
             .expect("the server answers")
             .expect("the line is readable");
+        self.line_bytes.push(line.len());
         serde_json::from_str(&line).expect("the server speaks json-rpc")
     }
 
@@ -215,9 +219,16 @@ fn params_for(method: &str) -> Value {
     let intent = json!(IntentId::from_raw("req_1"));
     match method {
         name::SESSION_LIST => json!({ "filter": {} }),
+        name::SESSION_LIST_HEADS => json!({ "filter": {}, "maxBytes": 4096 }),
+        name::SESSION_CHILDREN => json!({ "parent": session, "maxBytes": 4096 }),
         name::SESSION_OPEN => json!({ "selector": selector() }),
         name::SESSION_CLOSE | name::SESSION_DELETE => json!({ "session": session }),
         name::SESSION_HISTORY => json!({ "session": session, "page": { "limit": 10 } }),
+        name::SESSION_ITEM_PART => json!({ "session":session, "item":"itm_1",
+            "generation":3, "token":"fixture-item-token", "offset":0, "maxBytes":4096 }),
+        name::SESSION_FIELD_PART | name::SESSION_EVENT_PART => json!({
+            "session":session, "token":"unknown", "offset":0, "maxBytes":4096
+        }),
         name::SESSION_EVENTS => json!({ "session": session, "since": 0 }),
         name::SESSION_SUBMIT => json!({
             "session": session,

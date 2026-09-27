@@ -1196,6 +1196,11 @@
         },
         {
           "type": "string",
+          "const": "PROTOCOL_LIMIT",
+          "description": "A negotiated RPC byte or pin budget cannot carry this value safely."
+        },
+        {
+          "type": "string",
           "const": "NOT_FOUND",
           "description": "What was named is not there any more: a queued line a turn has taken\n(ADR-0008 §2, amended M68)."
         },

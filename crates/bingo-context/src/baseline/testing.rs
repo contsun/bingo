@@ -100,6 +100,7 @@ impl HostApi for Journal {
         Ok(Attachment {
             session: snapshot.summary.id.clone(),
             snapshot,
+            history: None,
             events: Box::pin(futures::stream::empty()),
             handle: SessionHandle(Arc::new(Deaf)),
         })

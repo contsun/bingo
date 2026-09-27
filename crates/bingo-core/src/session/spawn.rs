@@ -84,7 +84,6 @@ fn spawn_with(
         mailbox: mailbox.clone(),
         rx,
         seq: journal.last().map_or(Seq::ZERO, |f| f.seq),
-        generation: state.history_generation,
         state,
         journal,
         store,

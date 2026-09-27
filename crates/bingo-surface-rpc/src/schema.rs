@@ -6,14 +6,14 @@
 
 use std::collections::BTreeMap;
 
-use bingo_sdk::ErrorCode;
+use bingo_sdk::{ErrorCode, HistoryChunk};
 use schemars::{SchemaGenerator, generate::SchemaSettings};
 use serde_json::{Map, Value, json};
 
 use crate::methods::{METHODS, NOTIFICATIONS, PROTOCOL, Ref, schema_of};
 
 /// Types a client needs that no method names. `ErrorCode` is `error.data.code`.
-static UNNAMED: &[Ref] = &[schema_of::<ErrorCode>];
+static UNNAMED: &[Ref] = &[schema_of::<ErrorCode>, schema_of::<HistoryChunk>];
 
 pub fn document() -> Value {
     let mut generator = generator();

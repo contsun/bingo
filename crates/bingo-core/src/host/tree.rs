@@ -56,15 +56,18 @@ pub(super) async fn attach(
     gateway: &broadcast::Sender<GatewayEvent>,
     root: Mailbox,
     who: ClientIdentity,
+    options: OpenOptions,
 ) -> Result<Attachment, KernelError> {
     // Subscribed before the descendants are listed, so a creation cannot fall between.
     let gateway = gateway.subscribe();
-    let (snapshot, events) = root.attach().await?;
+    let (snapshot, history, events) = root.attach_bounded(options.max_snapshot_bytes).await?;
+    let live_only = matches!(options.tree_backfill, Some(TreeBackfill::LiveOnly));
     let owners: Owners = Arc::default();
     let (out, rx) = mpsc::channel(SUBSCRIBER_CAPACITY);
     let mut forwarder = Forwarder {
         host,
         root: root.id().clone(),
+        live_only,
         followed: HashMap::new(),
         streams: SelectAll::new(),
         epochs: 0,
@@ -82,6 +85,7 @@ pub(super) async fn attach(
     Ok(Attachment {
         session: root.id().clone(),
         snapshot,
+        history,
         events: Box::pin(events),
         handle: SessionHandle(Arc::new(TreePort {
             root: root.port(who.clone()),
@@ -94,6 +98,8 @@ pub(super) async fn attach(
 struct Forwarder {
     host: Weak<Host>,
     root: SessionId,
+    /// Explicitly incomplete tree projection; old descendants are opened directly.
+    live_only: bool,
     /// Every session followed, root included.
     followed: HashMap<SessionId, Followed>,
     streams: SelectAll<TaggedStream>,
@@ -156,6 +162,10 @@ impl Forwarder {
     /// earlier stream of the same session left off.
     fn follow(&mut self, id: SessionId, frames: FrameStream, source: Source) {
         let last = self.since(&id);
+        self.follow_from(id, last, frames, source);
+    }
+
+    fn follow_from(&mut self, id: SessionId, last: Seq, frames: FrameStream, source: Source) {
         self.epochs += 1;
         let epoch = self.epochs;
         self.followed.insert(
@@ -313,7 +323,9 @@ impl Forwarder {
                 self.adopt(&id).await;
             }
         }
-        self.adopt_stored().await;
+        if !self.live_only {
+            self.adopt_stored().await;
+        }
     }
 
     /// Follow a session that runs here, from its head or from the tail of a
@@ -328,8 +340,11 @@ impl Forwarder {
         let Ok(live) = host.live(id) else {
             return;
         };
-        let since = self.since(id);
-        if let Ok(frames) = live.mailbox.events_since(since).await {
+        if self.live_only && !self.followed.contains_key(id) {
+            if let Ok((cut, frames)) = live.mailbox.tail_events().await {
+                self.follow_from(id.clone(), cut, frames, Source::Live(live.mailbox));
+            }
+        } else if let Ok(frames) = live.mailbox.events_since(self.since(id)).await {
             self.follow_live(live.mailbox, frames);
         }
     }
@@ -442,6 +457,10 @@ impl SessionPort for TreePort {
 
     async fn history(&self, page: HistoryPage) -> Result<HistoryChunk, KernelError> {
         self.root.history(page).await
+    }
+
+    async fn item_for_pin(&self, id: &ItemId, generation: u64) -> Result<Item, KernelError> {
+        self.root.item_for_pin(id, generation).await
     }
 
     async fn events_since(&self, since: Seq) -> Result<FrameStream, KernelError> {

@@ -6,11 +6,17 @@
 //! started only after its `session/open` reply is already queued, which is what
 //! makes "the snapshot precedes the frames" true by construction (ADR-0007).
 
+pub(crate) mod bounded;
+mod discovery;
+mod snapshot;
+
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use bingo_sdk::{
-    Attachment, ClientIdentity, CloseReason, ErrorCode, Exit, FrameStream, HostHandle, KernelError,
-    SessionHandle, SessionId,
+    Attachment, ClientIdentity, CloseReason, ErrorCode, Exit, FrameStream, HistoryChunk,
+    HostHandle, KernelError, SessionFilter, SessionHandle, SessionId, SessionSummary,
 };
 use futures::{SinkExt, StreamExt};
 use serde::Serialize;
@@ -25,11 +31,15 @@ use crate::codec::{
     PARSE_ERROR, Request, Response, RpcError,
 };
 use crate::methods::{
-    AnswerParams, CatalogParams, DeliverParams, Empty, EventParams, EventsParams, ExtendParams,
-    HistoryParams, InitializeParams, InitializeResult, InterruptParams, ListParams, ListResult,
-    OpenParams, OpenResult, SessionParams, SignalParams, SubmitParams, name,
+    AnswerParams, CatalogParams, ChildrenParams, ChildrenResult, DeliverParams, Empty, EventParams,
+    EventsParams, ExtendParams, GatewaySubscribeParams, HeadField, HeadOmission, HistoryParams,
+    HistoryResult, InitializeParams, InitializeResult, InterruptParams, ItemPartParams,
+    ListHeadsParams, ListHeadsResult, ListParams, ListResult, MAX_BOUNDED_LINE_BYTES, OmittedField,
+    OpenParams, OpenResult, PinnedPartParams, ReferenceAvailability, SessionParams, SignalParams,
+    SubmitParams, SummaryHead, TreeSnapshot, WireOversizedItem, name,
 };
 use crate::session::{Forwarder, Pump};
+use bounded::{Kind, Pins, fnv1a64};
 
 /// Enough to absorb a burst of frames without letting a slow reader grow it
 /// without bound; a full channel is backpressure on the session's forwarder.
@@ -116,8 +126,13 @@ enum Start {
         handle: SessionHandle,
         /// A tree attachment: every frame is notified with this root.
         tree: bool,
+        max_bytes: Option<usize>,
+        generation: u64,
     },
-    Gateway(bingo_sdk::GatewayStream),
+    Gateway {
+        events: bingo_sdk::GatewayStream,
+        max_bytes: Option<usize>,
+    },
 }
 
 struct Server {
@@ -127,6 +142,7 @@ struct Server {
     /// the handshake and who is asking are one fact.
     client: Option<ClientIdentity>,
     open: HashMap<SessionId, Forwarder>,
+    pins: Pins,
     gateway: Option<Pump>,
     /// Set by `shutdown`; the loop stops once the reply is queued.
     exit: Option<Exit>,
@@ -139,6 +155,7 @@ impl Server {
             out,
             client: None,
             open: HashMap::new(),
+            pins: Pins::default(),
             gateway: None,
             exit: None,
         }
@@ -190,7 +207,15 @@ impl Server {
         let Request {
             id, method, params, ..
         } = request;
-        match self.dispatch(&method, params).await {
+        if serde_json::to_vec(&id).is_ok_and(|bytes| bytes.len() > 1024) {
+            return self
+                .fail(
+                    None,
+                    RpcError::new(INVALID_REQUEST, "request id is too long"),
+                )
+                .await;
+        }
+        match self.dispatch(&method, params, &id).await {
             Ok(reply) => {
                 self.send(Message::Response(Response::ok(id, reply.result)))
                     .await?;
@@ -203,7 +228,7 @@ impl Server {
         }
     }
 
-    async fn dispatch(&mut self, method: &str, params: Value) -> Result<Reply, RpcError> {
+    async fn dispatch(&mut self, method: &str, params: Value, id: &Id) -> Result<Reply, RpcError> {
         if method != name::INITIALIZE && self.client.is_none() {
             return Err(
                 KernelError::new(ErrorCode::NotInitialized, "call initialize first").into(),
@@ -213,13 +238,18 @@ impl Server {
             name::INITIALIZE => self.initialize(params),
             name::SHUTDOWN => self.shutdown(params),
             name::SESSION_LIST => self.list(params).await,
-            name::SESSION_OPEN => self.open(params).await,
+            name::SESSION_LIST_HEADS => self.list_heads(params, id).await,
+            name::SESSION_CHILDREN => self.children(params, id).await,
+            name::SESSION_OPEN => self.open(params, id).await,
             name::SESSION_CLOSE => self.close(params).await,
             name::SESSION_DELETE => self.delete(params).await,
             name::SESSION_DELIVER => self.deliver(params).await,
             name::SESSION_EXTEND => self.extend(params).await,
             name::SESSION_SIGNAL => self.signal(params).await,
-            name::SESSION_HISTORY => self.history(params).await,
+            name::SESSION_HISTORY => self.history(params, id).await,
+            name::SESSION_ITEM_PART => self.item_part(params, id),
+            name::SESSION_FIELD_PART => self.pinned_part(params, id, Kind::Field),
+            name::SESSION_EVENT_PART => self.pinned_part(params, id, Kind::Event),
             name::SESSION_EVENTS => self.events(params).await,
             name::SESSION_SUBMIT => self.submit(params),
             name::SESSION_INTERRUPT => self.interrupt(params),
@@ -254,30 +284,65 @@ impl Server {
         Reply::of(&ListResult { sessions })
     }
 
-    async fn open(&mut self, params: Value) -> Result<Reply, RpcError> {
+    async fn open(&mut self, params: Value, id: &Id) -> Result<Reply, RpcError> {
         let params: OpenParams = parse(params)?;
+        if let Some(budget) = params.options.max_snapshot_bytes {
+            validate_budget(budget)?;
+        }
+        if params.options.tree_backfill.is_some()
+            && (!params.options.children || params.options.max_snapshot_bytes.is_none())
+        {
+            return Err(KernelError::new(
+                ErrorCode::InvalidInput,
+                "live-only tree requires bounded children attachment",
+            )
+            .into());
+        }
         let who = self.who()?;
         let Attachment {
             session,
             snapshot,
+            history,
             events,
             handle,
         } = self.host.open(params.selector, who, params.options).await?;
-        let reply = Reply::of(&OpenResult {
+        self.pins.remove_session(&session);
+        let generation = snapshot.history_generation;
+        let result = OpenResult {
             session: session.clone(),
             snapshot,
-        })?;
+            history,
+            tree: params.options.tree_backfill.map(|backfill| TreeSnapshot {
+                backfill,
+                descendants_complete: false,
+            }),
+            omitted_fields: Vec::new(),
+        };
+        let reply = if let Some(budget) = params.options.max_snapshot_bytes {
+            match snapshot::fit_open(id, &session, &result, budget, &self.pins) {
+                Ok(result) => Reply { result, then: None },
+                Err(error) => {
+                    self.pins.remove_session(&session);
+                    return Err(error);
+                }
+            }
+        } else {
+            Reply::of(&result)?
+        };
         Ok(reply.then(Start::Session {
             session,
             events,
             handle,
             tree: params.options.children,
+            max_bytes: params.options.max_snapshot_bytes,
+            generation,
         }))
     }
 
     async fn close(&mut self, params: Value) -> Result<Reply, RpcError> {
         let params: SessionParams = parse(params)?;
         self.open.remove(&params.session);
+        self.pins.remove_session(&params.session);
         self.host
             .close(&params.session, CloseReason::Client)
             .await?;
@@ -287,6 +352,7 @@ impl Server {
     async fn delete(&mut self, params: Value) -> Result<Reply, RpcError> {
         let params: SessionParams = parse(params)?;
         self.open.remove(&params.session);
+        self.pins.remove_session(&params.session);
         self.host.delete(&params.session).await?;
         Reply::empty()
     }
@@ -330,23 +396,157 @@ impl Server {
         Reply::empty()
     }
 
-    async fn history(&mut self, params: Value) -> Result<Reply, RpcError> {
+    async fn history(&mut self, params: Value, id: &Id) -> Result<Reply, RpcError> {
         let params: HistoryParams = parse(params)?;
-        let chunk = self.port(&params.session)?.history(params.page).await?;
-        Reply::of(&chunk)
+        let budget = params.page.max_bytes;
+        let mut page = params.page;
+        if let Some(budget) = budget {
+            validate_budget(budget)?;
+            page.max_bytes = Some(budget.saturating_sub(512));
+        }
+        let handle = self.port(&params.session)?;
+        let chunk = handle.history(page).await?;
+        let result = self.pinned_history(&params.session, &handle, chunk).await?;
+        if let Some(budget) = budget
+            && response_len(id, &result)? > budget
+        {
+            if let Some(WireOversizedItem {
+                availability: ReferenceAvailability::Available { token },
+                ..
+            }) = &result.oversized
+            {
+                self.pins.remove_token(token);
+            }
+            return Err(protocol_limit("the history reply cannot fit this page"));
+        }
+        Reply::of(&result)
+    }
+
+    async fn pinned_history(
+        &self,
+        session: &SessionId,
+        handle: &SessionHandle,
+        chunk: HistoryChunk,
+    ) -> Result<HistoryResult, RpcError> {
+        let oversized = match chunk.oversized {
+            Some(marker) => {
+                let availability = if !self.pins.can_admit(marker.total_bytes) {
+                    ReferenceAvailability::Unavailable {
+                        reason: "pinBudgetExceeded".into(),
+                    }
+                } else {
+                    let item = handle.item_for_pin(&marker.id, chunk.generation).await?;
+                    let raw = serde_json::to_string(&item).map_err(|error| {
+                        RpcError::new(KERNEL_ERROR, format!("unserialisable item: {error}"))
+                    })?;
+                    if item.id != marker.id
+                        || raw.len() != marker.total_bytes
+                        || fnv1a64(raw.as_bytes()) != marker.checksum
+                    {
+                        return Err(KernelError::new(
+                            ErrorCode::StaleGeneration,
+                            "item changed before its history reference was pinned",
+                        )
+                        .into());
+                    }
+                    self.pins.add(
+                        session.clone(),
+                        None,
+                        Kind::Item,
+                        raw,
+                        Some(chunk.generation),
+                        Some(marker.id.clone()),
+                    )
+                };
+                Some(WireOversizedItem {
+                    id: marker.id,
+                    total_bytes: marker.total_bytes,
+                    checksum: marker.checksum,
+                    availability,
+                })
+            }
+            None => None,
+        };
+        Ok(HistoryResult {
+            items: chunk.items,
+            next: chunk.next,
+            generation: chunk.generation,
+            oversized,
+        })
+    }
+
+    fn item_part(&self, params: Value, id: &Id) -> Result<Reply, RpcError> {
+        let params: ItemPartParams = parse(params)?;
+        self.port(&params.session)?;
+        if params.token.is_empty() {
+            return Err(protocol_limit("this item is not available"));
+        }
+        let part = self.pins.part(
+            &params.session,
+            &params.token,
+            Kind::Item,
+            Some((&params.item, params.generation)),
+            params.offset,
+            params.max_bytes,
+        )?;
+        self.part_reply(id, &part)
+    }
+
+    fn pinned_part(&self, params: Value, id: &Id, kind: Kind) -> Result<Reply, RpcError> {
+        let params: PinnedPartParams = parse(params)?;
+        if self.port(&params.session).is_err() {
+            let owner = self
+                .pins
+                .owner_for(&params.session, &params.token)
+                .ok_or_else(|| {
+                    KernelError::new(ErrorCode::SessionNotFound, "the source tree is not open")
+                })?;
+            self.port(&owner)?;
+        }
+        if params.token.is_empty() {
+            return Err(protocol_limit("this field is not available"));
+        }
+        let part = self.pins.part(
+            &params.session,
+            &params.token,
+            kind,
+            None,
+            params.offset,
+            params.max_bytes,
+        )?;
+        self.part_reply(id, &part)
+    }
+
+    fn part_reply(
+        &self,
+        id: &Id,
+        part: &crate::methods::SerializedPart,
+    ) -> Result<Reply, RpcError> {
+        if response_len(id, part)? >= 16 * 1024 * 1024 {
+            return Err(protocol_limit("part reply exceeds the transport line"));
+        }
+        Reply::of(part)
     }
 
     /// Resync: the frames after `since`, then live, on a forwarder that replaces
     /// the one this session already had.
     async fn events(&mut self, params: Value) -> Result<Reply, RpcError> {
         let params: EventsParams = parse(params)?;
-        let handle = self.port(&params.session)?;
+        let forwarder = self
+            .open
+            .get(&params.session)
+            .ok_or_else(|| KernelError::new(ErrorCode::SessionNotFound, "session is not open"))?;
+        let handle = forwarder.handle.clone();
+        let max_bytes = forwarder.max_bytes;
+        let generation = forwarder.generation.load(Ordering::Acquire);
         let events = handle.events_since(params.since).await?;
         Ok(Reply::empty()?.then(Start::Session {
             session: params.session,
             events,
             handle,
             tree: false,
+            max_bytes,
+            generation,
         }))
     }
 
@@ -382,12 +582,18 @@ impl Server {
     }
 
     fn subscribe(&mut self, params: Value) -> Result<Reply, RpcError> {
-        let Empty {} = parse(params)?;
+        let params: GatewaySubscribeParams = parse(params)?;
+        if let Some(budget) = params.max_bytes {
+            validate_budget(budget)?;
+        }
         if self.gateway.is_some() {
             return Reply::empty();
         }
         let events = self.host.gateway_events();
-        Ok(Reply::empty()?.then(Start::Gateway(events)))
+        Ok(Reply::empty()?.then(Start::Gateway {
+            events,
+            max_bytes: params.max_bytes,
+        }))
     }
 
     /// After the reply is queued, never before.
@@ -398,18 +604,28 @@ impl Server {
                 events,
                 handle,
                 tree,
+                max_bytes,
+                generation,
             } => {
                 let root = tree.then(|| session.clone());
                 let events = events.map(move |frame| EventParams {
                     frame,
                     root: root.clone(),
                 });
-                let pump = Pump::spawn(name::EVENT, events, self.out.clone());
+                let generation = Arc::new(AtomicU64::new(generation));
+                let pump = Pump::session(
+                    events,
+                    self.out.clone(),
+                    self.pins.clone(),
+                    max_bytes,
+                    Arc::clone(&generation),
+                );
                 // Replacing drops the old forwarder, which stops its task.
-                self.open.insert(session, Forwarder::new(handle, pump));
+                self.open
+                    .insert(session, Forwarder::new(handle, pump, max_bytes, generation));
             }
-            Start::Gateway(events) => {
-                self.gateway = Some(Pump::spawn(name::GATEWAY_EVENT, events, self.out.clone()));
+            Start::Gateway { events, max_bytes } => {
+                self.gateway = Some(Pump::gateway(events, self.out.clone(), max_bytes));
             }
         }
     }
@@ -461,4 +677,24 @@ fn parse<T: DeserializeOwned>(params: Value) -> Result<T, RpcError> {
 fn encode<T: Serialize>(value: &T) -> Result<Value, RpcError> {
     serde_json::to_value(value)
         .map_err(|error| RpcError::new(KERNEL_ERROR, format!("unserialisable result: {error}")))
+}
+
+fn response_len<T: Serialize>(id: &Id, value: &T) -> Result<usize, RpcError> {
+    let message = Message::Response(Response::ok(id.clone(), encode(value)?));
+    serde_json::to_vec(&message)
+        .map(|line| line.len())
+        .map_err(|error| RpcError::new(KERNEL_ERROR, format!("unserialisable reply: {error}")))
+}
+
+fn protocol_limit(message: &str) -> RpcError {
+    KernelError::new(ErrorCode::ProtocolLimit, message).into()
+}
+
+fn validate_budget(budget: usize) -> Result<(), RpcError> {
+    if !(1024..=MAX_BOUNDED_LINE_BYTES).contains(&budget) {
+        return Err(
+            KernelError::new(ErrorCode::InvalidInput, "invalid bounded line budget").into(),
+        );
+    }
+    Ok(())
 }

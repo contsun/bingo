@@ -75,7 +75,6 @@ struct Actor {
     /// Flipped when the actor is done, for whoever waits on the mailbox.
     done: watch::Sender<bool>,
     pending: HashMap<InteractionId, Pending>,
-    generation: u64,
     /// A close that waits for the running turn to wind down.
     closing: Option<CloseReason>,
     progress_n: u32,
@@ -137,9 +136,18 @@ impl Actor {
                 reply,
             } => drop(reply.send(self.withdraw(intent, surface).await)),
             Msg::Answer(answered) => self.answer(answered).await,
-            Msg::Attach { reply } => drop(reply.send(self.attached())),
+            Msg::Attach { max_bytes, reply } => drop(reply.send(self.attached(max_bytes))),
+            Msg::TailEvents { reply } => {
+                let seq = self.state.seq;
+                drop(reply.send((seq, self.subscribe(seq))));
+            }
             Msg::EventsSince { since, reply } => drop(reply.send(self.subscribe(since))),
             Msg::History { page, reply } => drop(reply.send(self.history(&page))),
+            Msg::ItemForPin {
+                id,
+                generation,
+                reply,
+            } => drop(reply.send(self.item_for_pin(&id, generation))),
             Msg::Summary { reply } => drop(reply.send(self.stamped(self.state.summary.clone()))),
             Msg::Emit { turn, event } => self.emit(turn, *event).await,
             Msg::Ask {
@@ -584,12 +592,55 @@ impl Actor {
         frame.seq
     }
 
-    /// What a client attaches to: the snapshot it starts from, and every
-    /// frame after it.
-    fn attached(&mut self) -> (SessionState, FrameStream) {
-        let snapshot = self.state.clone();
+    /// The snapshot and its stream are cut by the same mailbox message. A
+    /// bounded reader clones only its visible item tail, never the full vector.
+    fn attached(
+        &mut self,
+        max_bytes: Option<usize>,
+    ) -> (SessionState, Option<OpenHistory>, FrameStream) {
+        let (snapshot, history) = match max_bytes {
+            Some(budget) => self.bounded_snapshot(budget),
+            None => (self.state.clone(), None),
+        };
         let stream = self.subscribe(snapshot.seq);
-        (snapshot, stream)
+        (snapshot, history, stream)
+    }
+
+    fn bounded_snapshot(&self, budget: usize) -> (SessionState, Option<OpenHistory>) {
+        let mut snapshot = SessionState::new(self.state.summary.clone());
+        snapshot.seq = self.state.seq;
+        snapshot.config = self.state.config.clone();
+        snapshot.history_generation = self.state.history_generation;
+        snapshot.turn = self.state.turn.clone();
+        snapshot.queue = self.state.queue.clone();
+        snapshot.interactions = self.state.interactions.clone();
+        snapshot.context = self.state.context;
+        snapshot.last_turn = self.state.last_turn.clone();
+        snapshot.unread = self.state.unread;
+        snapshot.closed = self.state.closed;
+        snapshot.extensions = self.state.extensions.clone();
+        snapshot.signals = self.state.signals.clone();
+        // The RPC envelope, id and metadata are added outside the actor. Leave
+        // room for those and let the server make the final whole-line decision.
+        let available = budget.saturating_sub(4096);
+        let mut used = serde_json::to_vec(&snapshot).map_or(available, |bytes| bytes.len());
+        let mut start = self.state.items.len();
+        while start > 0 {
+            let size = serde_json::to_vec(&self.state.items[start - 1])
+                .map_or(available, |bytes| bytes.len());
+            if used.saturating_add(size).saturating_add(1) > available {
+                break;
+            }
+            used += size + 1;
+            start -= 1;
+        }
+        snapshot.items = self.state.items[start..].to_vec();
+        let history = OpenHistory {
+            before: snapshot.items.first().map(|item| item.id.clone()),
+            has_more: start > 0,
+            generation: self.state.history_generation,
+        };
+        (snapshot, Some(history))
     }
 
     fn subscribe(&mut self, since: Seq) -> FrameStream {
@@ -649,26 +700,115 @@ impl Actor {
         id
     }
 
-    fn history(&self, page: &HistoryPage) -> HistoryChunk {
+    fn history(&self, page: &HistoryPage) -> Result<HistoryChunk, KernelError> {
+        self.check_generation(page.generation)?;
         let items = &self.state.items;
-        let end = page
-            .before
-            .as_ref()
-            .and_then(|b| items.iter().position(|i| &i.id == b))
-            .unwrap_or(items.len());
-        let start = if page.limit == 0 {
-            0
-        } else {
-            end.saturating_sub(page.limit)
+        let end = match page.before.as_ref() {
+            Some(before) => match items.iter().position(|item| &item.id == before) {
+                Some(index) => index,
+                None if page.max_bytes.is_some() => {
+                    return Err(KernelError::new(
+                        ErrorCode::StaleGeneration,
+                        "the history cursor is no longer present",
+                    ));
+                }
+                None => items.len(), // Legacy unbounded callers keep their old behavior.
+            },
+            None => items.len(),
         };
+        let limit = if page.limit == 0 { end } else { page.limit };
+        let Some(max_bytes) = page.max_bytes else {
+            let start = end.saturating_sub(limit);
+            return Ok(HistoryChunk {
+                items: items[start..end].to_vec(),
+                next: (start > 0).then(|| items[start].id.clone()),
+                generation: self.state.history_generation,
+                oversized: None,
+            });
+        };
+        self.bounded_history(items, end, limit, max_bytes)
+    }
+
+    fn bounded_history(
+        &self,
+        items: &[Item],
+        end: usize,
+        limit: usize,
+        max_bytes: usize,
+    ) -> Result<HistoryChunk, KernelError> {
+        let mut start = end;
+        let mut used = 256usize; // JSON-RPC envelope, generation and cursor.
+        while start > 0 && end - start < limit {
+            let size = serde_json::to_vec(&items[start - 1])
+                .map_err(|error| {
+                    KernelError::new(
+                        ErrorCode::Internal,
+                        format!("item cannot serialize: {error}"),
+                    )
+                })?
+                .len();
+            if used.saturating_add(size + 1) > max_bytes {
+                break;
+            }
+            used += size + 1;
+            start -= 1;
+        }
         let slice = &items[start..end];
-        HistoryChunk {
+        let oversized = if slice.is_empty() && start > 0 {
+            let item = &items[start - 1];
+            let raw = serde_json::to_vec(item).map_err(|error| {
+                KernelError::new(
+                    ErrorCode::Internal,
+                    format!("item cannot serialize: {error}"),
+                )
+            })?;
+            Some(OversizedItem {
+                id: item.id.clone(),
+                total_bytes: raw.len(),
+                checksum: fnv1a64(&raw),
+            })
+        } else {
+            None
+        };
+        Ok(HistoryChunk {
             items: slice.to_vec(),
             next: (start > 0)
-                .then(|| slice.first().map(|i| i.id.clone()))
-                .flatten(),
-            generation: self.generation,
+                .then(|| {
+                    slice
+                        .first()
+                        .map(|item| &item.id)
+                        .or_else(|| oversized.as_ref().map(|item| &item.id))
+                })
+                .flatten()
+                .cloned(),
+            generation: self.state.history_generation,
+            oversized,
+        })
+    }
+
+    fn check_generation(&self, generation: Option<u64>) -> Result<(), KernelError> {
+        if generation.is_some_and(|generation| generation != self.state.history_generation) {
+            return Err(KernelError::new(
+                ErrorCode::StaleGeneration,
+                "history changed",
+            ));
         }
+        Ok(())
+    }
+
+    fn item_for_pin(&self, id: &ItemId, generation: u64) -> Result<Item, KernelError> {
+        self.check_generation(Some(generation))?;
+        self.state
+            .items
+            .iter()
+            .find(|item| &item.id == id)
+            .cloned()
+            .ok_or_else(|| {
+                KernelError::new(
+                    ErrorCode::StaleGeneration,
+                    format!("item {id} is no longer present"),
+                )
+            })
     }
 
     async fn turn_finished(&mut self, turn: TurnId, outcome: Result<TurnOutcome, String>) -> Flow {
@@ -770,6 +910,16 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
         .map(|s| (*s).to_string())
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "unknown panic".into())
+}
+
+/// Stable, non-security integrity check on the exact serialized UTF-8 bytes.
+fn fnv1a64(bytes: &[u8]) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]

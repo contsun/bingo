@@ -381,6 +381,7 @@ impl HostApi for Fleet {
         Ok(Attachment {
             session: id.clone(),
             snapshot,
+            history: None,
             events: self.frames(&id),
             handle: SessionHandle(Arc::new(Port {
                 fleet: self.clone(),

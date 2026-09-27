@@ -183,6 +183,61 @@ async fn a_child_that_already_exists_is_followed_from_its_head_too() {
 }
 
 #[tokio::test]
+async fn bounded_tree_follows_only_new_descendant_frames() {
+    let host = asking_host(vec![]).await;
+    let root = host
+        .open(create("/work", None), who(), OpenOptions::default())
+        .await
+        .unwrap();
+    let child = host
+        .open(
+            create("/work", Some(under(&root.session))),
+            who(),
+            OpenOptions::default(),
+        )
+        .await
+        .unwrap();
+    let mailbox = host.live(&child.session).unwrap().mailbox;
+    mailbox
+        .record(ItemBody::Notice {
+            level: Level::Info,
+            code: "old".into(),
+            text: "old child content".into(),
+        })
+        .await
+        .unwrap();
+    let mut tree = host
+        .open(
+            SessionSelector::ById { id: root.session },
+            who(),
+            OpenOptions {
+                children: true,
+                max_snapshot_bytes: Some(512 * 1024),
+                tree_backfill: Some(TreeBackfill::LiveOnly),
+            },
+        )
+        .await
+        .unwrap();
+    assert!(tree.history.is_some());
+    assert!(
+        tree.events.next().now_or_never().is_none(),
+        "old child frames are gaps"
+    );
+    let new = mailbox
+        .record(ItemBody::Notice {
+            level: Level::Info,
+            code: "new".into(),
+            text: "new child content".into(),
+        })
+        .await
+        .unwrap();
+    let frame = tree.events.next().await.unwrap();
+    assert_eq!(frame.session, child.session);
+    assert!(frame.seq > Seq(1));
+    assert!(matches!(frame.event, Event::ItemCompleted { item } if item.id == new));
+}
+
+#[tokio::test]
 async fn a_lagging_child_is_healed_and_the_client_never_sees_a_marker() {
     let host = asking_host(vec![]).await;
     let mut root = host
@@ -365,9 +420,7 @@ async fn a_child_inherits_the_model_and_effort_its_parent_stands_on() {
     );
 }
 
-/// A host whose scripted model declares reasoning, and a settings level for
-/// a root to stand on: without the declaration the level is filtered out of
-/// every request and this would prove nothing (ADR-0004).
+/// An uncatalogued model and a settings level for a root to stand on.
 async fn thinking_host(scripts: Vec<Script>) -> (Arc<Host>, Arc<ScriptedProvider>) {
     let provider = ScriptedProvider::new(scripts);
     let plugins = vec![TestPlugin::boxed(
@@ -379,7 +432,6 @@ async fn thinking_host(scripts: Vec<Script>) -> (Arc<Host>, Arc<ScriptedProvider
         json!({
             "model": "m",
             "thinking": "high",
-            "models": { "scripted/m": { "reasoning": true } },
         }),
     );
     (Host::build(plugins, config).await.unwrap(), provider)

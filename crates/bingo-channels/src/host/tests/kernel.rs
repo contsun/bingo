@@ -119,6 +119,7 @@ impl SessionPort for TestSession {
             items: Vec::new(),
             next: None,
             generation: 0,
+            oversized: None,
         })
     }
 
@@ -159,6 +160,7 @@ impl TestHost {
         Attachment {
             session: SessionId::from_raw(fixtures::SESSION),
             snapshot: SessionState::new(summary),
+            history: None,
             events: session.attach(),
             handle: SessionHandle(session as Arc<dyn SessionPort>),
         }

@@ -82,6 +82,7 @@ impl Runner {
             snapshot,
             events,
             handle,
+            ..
         } = attachment;
         let deliverer = Deliverer::new(adapter.limits().clone(), gate, key.clone());
         directory.sit(
@@ -533,6 +534,7 @@ impl Runner {
             snapshot,
             events,
             handle,
+            ..
         } = attachment;
         let parent = self.directory.parent(&old_root);
         self.directory.leave(&old_root);
