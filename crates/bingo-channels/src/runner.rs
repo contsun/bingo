@@ -508,7 +508,9 @@ impl Runner {
         }
         self.handle
             .interrupt(IntentId::mint(), bingo_sdk::InterruptScope::Head);
-        if let Err(error) = self.say("任务已停止。").await {
+        let ops = self.deliverer.finish_stream();
+        self.perform(ops).await;
+        if let Err(error) = self.post("任务已停止。").await {
             tracing::warn!(%error, key = %self.key, "the old-turn notice could not be sent");
         }
         self.ended(false).await;
@@ -532,19 +534,21 @@ impl Runner {
             events,
             handle,
         } = attachment;
+        let parent = self.directory.parent(&old_root);
         self.directory.leave(&old_root);
         self.directory.sit(
             session.clone(),
             Seat {
                 adapter: Arc::clone(&self.adapter),
                 conversation: self.conversation.clone(),
-                parent: None,
+                parent,
             },
         );
         self.root = session.clone();
         self.states = BTreeMap::from([(session, snapshot)]);
         self.events = events;
         self.handle = handle;
+        self.deliverer.reset();
         self.streaming = None;
         self.working = None;
         self.asked.clear();

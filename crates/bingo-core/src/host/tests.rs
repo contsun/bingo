@@ -15,6 +15,7 @@ mod providers;
 mod queue;
 mod resume;
 mod rewind;
+mod routes;
 mod services;
 mod tree;
 mod views;

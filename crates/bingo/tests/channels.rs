@@ -189,6 +189,46 @@ async fn a_message_opens_a_session_and_the_answer_streams_into_one_edited_messag
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_new_session_keeps_the_thread_and_answers_the_next_message() {
+    let mut chat = Chat::open(
+        &answering("Ready."),
+        json!({"channels": {"loopback": {"access": {"group": {"mention": false}}}}}),
+    )
+    .await;
+    chat.peer
+        .say(json!({
+            "kind": "message", "chat": "oc_1", "thread": "omt_1", "group": true,
+            "principal": "u_1", "text": "/new", "parent": "om_new",
+        }))
+        .await;
+    let ops = chat
+        .peer
+        .until(|op| op["text"] == json!("新会话已开启。"))
+        .await;
+    let notice = ops.last().expect("the new-session notice");
+    assert!(
+        is(notice, "reply"),
+        "the notice is a thread reply: {ops:#?}"
+    );
+    assert_eq!(notice["parent"], json!("om_new"));
+    chat.peer
+        .say(json!({
+            "kind": "message", "chat": "oc_1", "thread": "omt_1", "group": true,
+            "principal": "u_1", "text": "continue", "parent": "om_question",
+        }))
+        .await;
+    let ops = chat.peer.until(|op| is(op, "finish")).await;
+    let opened = ops
+        .iter()
+        .find(|op| is(op, "reply"))
+        .expect("the answer is a reply");
+    assert_eq!(opened["parent"], json!("om_question"));
+    let finished = ops.last().expect("the answer is finished");
+    assert_eq!(finished["id"], opened["id"]);
+    assert_eq!(finished["text"], json!("Ready."));
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_permission_is_buttons_and_a_click_answers_it() {
     let mut chat = Chat::open(WRITES_A_FILE, json!({})).await;
     chat.peer.chats("oc_1", "write it").await;

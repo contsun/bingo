@@ -1,3 +1,4 @@
+mod controls;
 mod kernel;
 
 use std::collections::BTreeSet;

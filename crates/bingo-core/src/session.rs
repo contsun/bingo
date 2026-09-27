@@ -250,6 +250,7 @@ impl Actor {
     /// that will answer it rather than the one that answered it last time.
     fn restated(&self) -> SessionSummary {
         SessionSummary {
+            key: self.config.session.key.clone(),
             // A rename reaches the actor as a config, like a model does; a
             // name the session already earned is never taken back by one.
             title: self
