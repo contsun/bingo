@@ -166,6 +166,25 @@ impl Deliverer {
         flushed.map(|full| self.replace(full)).into_iter().collect()
     }
 
+    /// Switching sessions drops the old stream before its completion frame can
+    /// arrive, so even the coalescer's pending words must be delivered first.
+    pub fn finish_stream(&mut self) -> Vec<Op> {
+        if self.streaming.is_none() {
+            return Vec::new();
+        }
+        vec![Op::Finalize {
+            text: self.drain(),
+            question: None,
+        }]
+    }
+
+    pub fn reset(&mut self) {
+        self.turn = None;
+        self.delivered.clear();
+        self.streaming = None;
+        self.asked.clear();
+    }
+
     /// When `tick` is worth calling.
     pub fn due(&self) -> Option<Instant> {
         self.streaming.as_ref().and_then(|s| s.due(&self.gate))

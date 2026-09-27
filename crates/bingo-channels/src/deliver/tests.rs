@@ -164,6 +164,51 @@ fn only_the_newest_snapshot_is_pending_and_the_older_ones_are_forgotten() {
 }
 
 #[test]
+fn finishing_a_stream_drains_pending_words_once() {
+    let mut chat = Chat::new();
+    chat.feed(turn_started(1));
+    chat.feed(says(2, "itm_1", "Hel"));
+    assert!(chat.feed(says(3, "itm_1", "Hello")).is_empty());
+    assert_eq!(
+        chat.deliverer.finish_stream(),
+        [Op::Finalize {
+            text: "Hello".into(),
+            question: None
+        }]
+    );
+    assert!(chat.deliverer.finish_stream().is_empty());
+    assert_eq!(chat.feed(turn_completed(4)), [Op::Ended { failed: false }]);
+    assert!(chat.wait(1_000).is_empty());
+}
+
+#[test]
+fn resetting_a_delivery_forgets_its_previous_session() {
+    let mut chat = Chat::new();
+    chat.feed(turn_started(1));
+    chat.feed(says(2, "itm_1", "First"));
+    chat.feed(asks(3, permission(None)));
+    chat.feed(says(4, "itm_2", "Second"));
+    chat.feed(says(5, "itm_2", "Second part"));
+    assert!(chat.deliverer.due().is_some());
+    chat.deliverer.reset();
+    assert!(
+        chat.deliverer
+            .question(&InteractionId::from_raw("int_1"))
+            .is_none()
+    );
+    assert!(chat.deliverer.due().is_none());
+    assert!(chat.wait(1_000).is_empty());
+    assert!(chat.deliverer.finish_stream().is_empty());
+    assert_eq!(chat.feed(turn_completed(6)), [Op::Ended { failed: false }]);
+    chat.state = state();
+    chat.feed(turn_started(1));
+    assert_eq!(
+        chat.feed(says(2, "itm_1", "New")),
+        [Op::Open, Op::Replace { full: "New".into() }]
+    );
+}
+
+#[test]
 fn the_pending_snapshot_never_overwrites_the_final_text() {
     let mut chat = Chat::new();
     chat.feed(turn_started(1));
