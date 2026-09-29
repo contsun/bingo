@@ -205,7 +205,10 @@ impl Deliverer {
             .filter(|part| !part.trim().is_empty())
             .collect::<Vec<_>>()
             .join("\n");
-        (!said.is_empty()).then(|| self.status(&said)).into_iter().collect()
+        (!said.is_empty())
+            .then(|| self.status(&said))
+            .into_iter()
+            .collect()
     }
 
     /// The timer fired: whatever was held back, now.

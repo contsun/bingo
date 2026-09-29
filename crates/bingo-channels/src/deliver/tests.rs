@@ -592,12 +592,12 @@ fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
 fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine);
+    chat.deliverer.expecting(mine.clone());
     assert_eq!(
         chat.feed(frame(
             1,
             Event::IntentAck {
-                intent: IntentId::from_raw(mine.as_str()),
+                intent: mine,
                 outcome: IntentOutcome::Applied {
                     result: serde_json::json!({
                         "view": {

@@ -723,10 +723,7 @@ async fn a_card_that_has_streamed_a_while_is_renewed_before_it_closes() {
         .expect("a card");
     // The clock this adapter keeps is the one the platform runs on: wind it
     // back instead of waiting eight minutes.
-    locked(&feishu.streaming_since).insert(
-        "ctp_1".to_string(),
-        Instant::now() - STREAMING_RENEWED,
-    );
+    locked(&feishu.streaming_since).insert("ctp_1".to_string(), Instant::now() - STREAMING_RENEWED);
     feishu
         .edit()
         .expect("an editor")
