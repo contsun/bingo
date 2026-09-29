@@ -1,8 +1,8 @@
 use std::time::Duration;
 
 use bingo_sdk::{
-    Answer, CancelReason, ErrorCode, Event, InteractionId, KernelError, Level, ResolvedBy,
-    TurnStatus,
+    Answer, CancelReason, ErrorCode, Event, IntentId, IntentOutcome, InteractionId, KernelError,
+    Level, ResolvedBy, TurnStatus,
 };
 
 use super::*;
@@ -509,4 +509,107 @@ fn the_timer_is_only_armed_while_something_is_held() {
     assert!(chat.deliverer.due().is_some());
     chat.wait(600);
     assert!(chat.deliverer.due().is_none());
+}
+
+/// A command's own result is posted here; a prompt's ack is not a result, and
+/// a result earned by a write from somewhere else is not this chat's news.
+#[test]
+fn a_command_result_is_posted_for_this_chats_own_write() {
+    let mut chat = Chat::new();
+    let mine = IntentId::mint();
+    chat.deliverer.expecting(mine.clone());
+
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: mine,
+                outcome: IntentOutcome::Applied {
+                    result: serde_json::json!({ "message": "nothing is remembered yet" }),
+                },
+            },
+        )),
+        [Op::Status {
+            text: "nothing is remembered yet".into()
+        }]
+    );
+}
+
+#[test]
+fn a_write_this_chat_never_made_is_not_reported_here() {
+    let mut chat = Chat::new();
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: IntentId::mint(),
+                outcome: IntentOutcome::Applied {
+                    result: serde_json::json!({ "message": "somebody else's business" }),
+                },
+            },
+        )),
+        [],
+        "another surface's command is not this chat's to show"
+    );
+}
+
+#[test]
+fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
+    let mut chat = Chat::new();
+    let mine = IntentId::mint();
+    chat.deliverer.expecting(mine.clone());
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: mine.clone(),
+                outcome: IntentOutcome::TurnStarted {
+                    turn: TurnId::from_raw(TURN),
+                },
+            },
+        )),
+        [],
+        "a submitted prompt is already being shown"
+    );
+    assert_eq!(
+        chat.feed(frame(
+            2,
+            Event::IntentAck {
+                intent: mine,
+                outcome: IntentOutcome::Applied {
+                    result: serde_json::json!({ "message": "too late" }),
+                },
+            },
+        )),
+        [],
+        "the intent is spent, so a second ack for it says nothing"
+    );
+}
+
+/// A command that answers with a view: an IM channel shows the fold the sdk
+/// ships for exactly this (ADR-0013), not the node.
+#[test]
+fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
+    let mut chat = Chat::new();
+    let mine = IntentId::mint();
+    chat.deliverer.expecting(mine);
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: IntentId::from_raw(mine.as_str()),
+                outcome: IntentOutcome::Applied {
+                    result: serde_json::json!({
+                        "view": {
+                            "kind": "keyValue",
+                            "rows": [["model", "fake-1"], ["mode", "default"]],
+                        },
+                    }),
+                },
+            },
+        )),
+        [Op::Status {
+            text: "model: fake-1\nmode: default".into()
+        }]
+    );
 }

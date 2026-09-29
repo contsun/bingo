@@ -12,9 +12,11 @@
 
 use std::time::Instant;
 
+use serde_json::Value;
+
 use bingo_sdk::{
-    Answer, Event, Frame, Interaction, InteractionId, InteractionKind, ItemBody, Level, ResolvedBy,
-    SessionState, TurnId, TurnStatus,
+    Answer, Event, Frame, IntentId, IntentOutcome, Interaction, InteractionId, InteractionKind,
+    ItemBody, Level, ResolvedBy, SessionState, TurnId, TurnStatus, View,
 };
 
 use crate::gate::Gate;
@@ -108,6 +110,10 @@ pub struct Deliverer {
     streaming: Option<Streaming>,
     /// The questions this conversation showed and nobody has settled.
     asked: Vec<Question>,
+    /// Writes this chat made that the kernel has not answered yet, so a
+    /// command's result is posted here and a result earned elsewhere is not
+    /// (ADR-0016: the ack carries the intent that caused it).
+    pending: Vec<IntentId>,
 }
 
 impl std::fmt::Debug for Deliverer {
@@ -130,7 +136,19 @@ impl Deliverer {
             delivered: String::new(),
             streaming: None,
             asked: Vec::new(),
+            pending: Vec::new(),
         }
+    }
+
+    /// Remember a write this chat made, so its outcome is reported here. One
+    /// entry per submission, cleared by the ack that answers it; the cap is
+    /// only for the ack that never comes, which must not grow without bound.
+    pub fn expecting(&mut self, intent: IntentId) {
+        const REMEMBERED: usize = 64;
+        if self.pending.len() >= REMEMBERED {
+            self.pending.remove(0);
+        }
+        self.pending.push(intent);
     }
 
     /// One frame, already folded into `state` by the caller. For a frame from
@@ -150,9 +168,44 @@ impl Deliverer {
                 self.close(id, withdrawn(reason)).into_iter().collect()
             }
             Event::TurnCompleted { status, .. } => self.completed(state, status),
+            Event::IntentAck { intent, outcome } => self.acknowledged(intent, outcome),
             Event::Notice { level, text, .. } if *level != Level::Info => vec![self.status(text)],
             _ => Vec::new(),
         }
+    }
+
+    /// The kernel answered a write. Only what this chat asked for is reported,
+    /// and only a command's own result: a submitted prompt's `TurnStarted` is
+    /// already the turn being shown, a `Queued` line waits its turn, and a
+    /// rejection reaches the chat as that turn's failure — posting any of them
+    /// here would say the same thing twice.
+    fn acknowledged(&mut self, intent: &IntentId, outcome: &IntentOutcome) -> Vec<Op> {
+        let Some(at) = self.pending.iter().position(|pending| pending == intent) else {
+            return Vec::new();
+        };
+        self.pending.remove(at);
+        match outcome {
+            IntentOutcome::Applied { result } => self.applied(result),
+            _ => Vec::new(),
+        }
+    }
+
+    /// What a command said, in the words this chat can carry: its message,
+    /// then its view — folded by the sdk, which is the one degrade an IM
+    /// channel is meant to show (ADR-0013).
+    fn applied(&self, result: &Value) -> Vec<Op> {
+        let message = result.get("message").and_then(Value::as_str);
+        let view = result
+            .get("view")
+            .and_then(|view| serde_json::from_value::<View>(view.clone()).ok())
+            .map(|view| view.fold());
+        let said = [message.map(str::to_string), view]
+            .into_iter()
+            .flatten()
+            .filter(|part| !part.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join("\n");
+        (!said.is_empty()).then(|| self.status(&said)).into_iter().collect()
     }
 
     /// The timer fired: whatever was held back, now.

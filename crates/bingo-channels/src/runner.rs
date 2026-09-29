@@ -432,8 +432,9 @@ impl Runner {
         match self.answering(&text) {
             Some((id, answer)) => self.settles(id, answer).await,
             None => {
+                let intent = IntentId::mint();
                 self.handle.submit(
-                    IntentId::mint(),
+                    intent.clone(),
                     Input::Text {
                         text,
                         images,
@@ -445,6 +446,7 @@ impl Runner {
                         delivery: Delivery::Wake,
                     },
                 );
+                self.deliverer.expecting(intent);
                 self.acknowledge().await;
             }
         }
