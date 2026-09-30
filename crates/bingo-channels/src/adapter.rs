@@ -118,6 +118,13 @@ pub trait ChannelAdapter: Send + Sync {
         None
     }
 
+    /// Say a command's result in this platform's own words. `source` is the
+    /// command that answered, so a result that is empty — no servers, no
+    /// schedules — can be told apart from another command's empty result.
+    fn command_result(&self, _source: &str, text: &str) -> String {
+        text.to_string()
+    }
+
     fn edit(&self) -> Option<&dyn Edit> {
         None
     }

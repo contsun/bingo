@@ -723,7 +723,10 @@ async fn a_card_that_has_streamed_a_while_is_renewed_before_it_closes() {
         .expect("a card");
     // The clock this adapter keeps is the one the platform runs on: wind it
     // back instead of waiting eight minutes.
-    locked(&feishu.streaming_since).insert("ctp_1".to_string(), Instant::now() - STREAMING_RENEWED);
+    locked(&feishu.streaming_since).insert(
+        "ctp_1".to_string(),
+        Instant::now() - STREAMING_RENEWED,
+    );
     feishu
         .edit()
         .expect("an editor")
@@ -783,5 +786,51 @@ async fn a_card_that_timed_out_is_opened_again_too() {
         bodies(&server, &settings).await[0]["settings"],
         json!(r#"{"config":{"streaming_mode":true}}"#),
         "the clock is restarted after a timeout"
+    );
+}
+
+/// A command's result is written by the plugin that owns it, in English; the
+/// chat reading it is not. These are the shapes this surface knows, said
+/// again — matched whole, so a memory the person named `type` keeps its name.
+#[test]
+fn a_commands_result_is_said_in_the_language_the_chat_reads() {
+    // `/status` folds its key-values one per line.
+    assert_eq!(
+        words::command(
+            "/status",
+            "session: ses_1\ncwd: /tmp\nprovider: p\nmodel: m\nmode: default\n\
+             context: not measured yet\ntokens: 0 in · 0 out"
+        ),
+        "会话: ses_1\n工作目录: /tmp\n模型服务: p\n模型: m\n权限模式: default\n\
+         上下文: 尚未测量\ntokens: 0 in · 0 out"
+    );
+
+    // An empty result says so, rather than showing bare headers.
+    assert_eq!(
+        words::command("/mcp", "server · status · tools · auth"),
+        "暂无 MCP 服务"
+    );
+    assert_eq!(
+        words::command(
+            "/schedule",
+            "no schedules yet\nschedules: held by this process"
+        ),
+        "暂无定时任务\n定时任务由当前进程持有"
+    );
+
+    // A result that is a sentence.
+    assert!(words::command(
+        "/memory",
+        "nothing is remembered yet; memories go in /a and /b"
+    )
+    .starts_with("尚未记录任何记忆"));
+
+    // A table's header row, whole — and its rows left exactly alone.
+    assert_eq!(
+        words::command(
+            "/memory",
+            "scope · name · type · description\nuser · type · project · a memory named type"
+        ),
+        "范围 · 名称 · 类型 · 说明\nuser · type · project · a memory named type"
     );
 }

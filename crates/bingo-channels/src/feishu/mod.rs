@@ -24,6 +24,7 @@ pub mod posted;
 pub mod send;
 pub mod token;
 pub mod upload;
+pub mod words;
 pub mod ws;
 
 use std::collections::{BTreeMap, HashMap};
@@ -434,6 +435,10 @@ impl ChannelAdapter for Feishu {
             "esc" | "escape" | "stop" => Some(ChannelCommand::Stop),
             _ => None,
         }
+    }
+
+    fn command_result(&self, source: &str, text: &str) -> String {
+        words::command(source, text)
     }
 
     async fn run(&self, inbox: Inbox, cancel: CancellationToken) -> Result<(), ChannelError> {

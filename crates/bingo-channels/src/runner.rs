@@ -197,6 +197,7 @@ impl Runner {
             Op::Replace { full } => self.replace(&full).await,
             Op::Finalize { text, question } => self.finalize(&text, question).await,
             Op::Status { text } => self.post(&text).await.map(drop),
+            Op::Card { source, text } => self.card(&source, &text).await,
             Op::Resolved { question, outcome } => self.settle(&question, &outcome).await,
             Op::Ended { failed } => {
                 self.ended(failed).await;
@@ -389,6 +390,32 @@ impl Runner {
         self.post_mode(text, Mode::Once)
     }
 
+    /// A command's result: its own message, in the platform's words for that
+    /// command, shown the way an answer is. A platform with a card draws one,
+    /// so a table stays a table; one without gets the prose, which is the same
+    /// degrade every other node takes.
+    async fn card(&mut self, source: &str, text: &str) -> Result<(), ChannelError> {
+        let said = self.adapter.command_result(source, text);
+        if said.is_empty() {
+            return Ok(());
+        }
+        let adapter = Arc::clone(&self.adapter);
+        let Some(edit) = adapter.edit() else {
+            return self.post(&said).await.map(drop);
+        };
+        let at = self.post_mode(&said, Mode::Stream).await?;
+        if let Err(error) = edit.finish(&at, &said).await {
+            // A card that will not close is not a result that is gone.
+            tracing::warn!(
+                %error,
+                key = %self.key,
+                "a command's card would not close; posting it whole"
+            );
+            return self.post(&said).await.map(drop);
+        }
+        Ok(())
+    }
+
     fn post_mode(
         &self,
         text: &str,
@@ -436,7 +463,7 @@ impl Runner {
                 self.handle.submit(
                     intent.clone(),
                     Input::Text {
-                        text,
+                        text: text.clone(),
                         images,
                         origin: Origin {
                             surface: SURFACE_ID.into(),
@@ -446,7 +473,7 @@ impl Runner {
                         delivery: Delivery::Wake,
                     },
                 );
-                self.deliverer.expecting(intent);
+                self.deliverer.expecting(intent, text);
                 self.acknowledge().await;
             }
         }

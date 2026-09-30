@@ -517,7 +517,7 @@ fn the_timer_is_only_armed_while_something_is_held() {
 fn a_command_result_is_posted_for_this_chats_own_write() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone());
+    chat.deliverer.expecting(mine.clone(), "/status".into());
 
     assert_eq!(
         chat.feed(frame(
@@ -529,7 +529,8 @@ fn a_command_result_is_posted_for_this_chats_own_write() {
                 },
             },
         )),
-        [Op::Status {
+        [Op::Card {
+            source: "/status".into(),
             text: "nothing is remembered yet".into()
         }]
     );
@@ -557,7 +558,7 @@ fn a_write_this_chat_never_made_is_not_reported_here() {
 fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone());
+    chat.deliverer.expecting(mine.clone(), "/status".into());
     assert_eq!(
         chat.feed(frame(
             1,
@@ -592,7 +593,7 @@ fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
 fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone());
+    chat.deliverer.expecting(mine.clone(), "/status".into());
     assert_eq!(
         chat.feed(frame(
             1,
@@ -608,8 +609,10 @@ fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
                 },
             },
         )),
-        [Op::Status {
-            text: "model: fake-1\nmode: default".into()
+        [Op::Card {
+            source: "/status".into(),
+            text: "model: fake-1
+mode: default".into()
         }]
     );
 }
