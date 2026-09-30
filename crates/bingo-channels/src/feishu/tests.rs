@@ -723,10 +723,7 @@ async fn a_card_that_has_streamed_a_while_is_renewed_before_it_closes() {
         .expect("a card");
     // The clock this adapter keeps is the one the platform runs on: wind it
     // back instead of waiting eight minutes.
-    locked(&feishu.streaming_since).insert(
-        "ctp_1".to_string(),
-        Instant::now() - STREAMING_RENEWED,
-    );
+    locked(&feishu.streaming_since).insert("ctp_1".to_string(), Instant::now() - STREAMING_RENEWED);
     feishu
         .edit()
         .expect("an editor")
@@ -805,7 +802,15 @@ fn a_commands_result_is_said_in_the_language_the_chat_reads() {
          上下文: 尚未测量\ntokens: 0 in · 0 out"
     );
 
-    // An empty result says so, rather than showing bare headers.
+    // An empty result says so, rather than showing bare headers — whether the
+    // table came as a markdown one or as the plain dialect's joined row.
+    assert_eq!(
+        words::command(
+            "/mcp",
+            "| server | status | tools | auth |\n| --- | --- | --- | --- |"
+        ),
+        "暂无 MCP 服务"
+    );
     assert_eq!(
         words::command("/mcp", "server · status · tools · auth"),
         "暂无 MCP 服务"
@@ -819,18 +824,23 @@ fn a_commands_result_is_said_in_the_language_the_chat_reads() {
     );
 
     // A result that is a sentence.
-    assert!(words::command(
-        "/memory",
-        "nothing is remembered yet; memories go in /a and /b"
-    )
-    .starts_with("尚未记录任何记忆"));
+    assert!(
+        words::command(
+            "/memory",
+            "nothing is remembered yet; memories go in /a and /b"
+        )
+        .starts_with("尚未记录任何记忆")
+    );
 
-    // A table's header row, whole — and its rows left exactly alone.
+    // A table's header row, whole, and its rule left alone — and its rows
+    // exactly alone, so a memory the person named `type` stays `type`.
     assert_eq!(
         words::command(
             "/memory",
-            "scope · name · type · description\nuser · type · project · a memory named type"
+            "| scope | name | type | description |\n| --- | --- | --- | --- |\n\
+             | user | type | project | a memory named type |"
         ),
-        "范围 · 名称 · 类型 · 说明\nuser · type · project · a memory named type"
+        "| 范围 | 名称 | 类型 | 说明 |\n| --- | --- | --- | --- |\n\
+         | user | type | project | a memory named type |"
     );
 }

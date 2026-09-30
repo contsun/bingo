@@ -612,7 +612,87 @@ fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
         [Op::Card {
             source: "/status".into(),
             text: "model: fake-1
-mode: default".into()
+mode: default"
+                .into()
+        }]
+    );
+}
+
+/// A command's view of a table, said to a chat that draws markdown and to one
+/// that does not. `/memory` and `/mcp` both answer with one, and a card is
+/// where a person sees a table rather than a row of cells wedged between
+/// middle dots.
+#[test]
+fn a_view_table_is_a_table_to_a_chat_that_draws_markdown() {
+    let result = serde_json::json!({
+        "view": {
+            "kind": "table",
+            "headers": ["scope", "name"],
+            "rows": [["user", "type"]],
+        },
+    });
+    let said = |chat: &mut Chat| {
+        let mine = IntentId::mint();
+        chat.deliverer.expecting(mine.clone(), "/memory".into());
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: mine,
+                outcome: IntentOutcome::Applied {
+                    result: result.clone(),
+                },
+            },
+        ))
+    };
+    assert_eq!(
+        said(&mut Chat::new()),
+        [Op::Card {
+            source: "/memory".into(),
+            text: "| scope | name |\n| --- | --- |\n| user | type |".into()
+        }],
+        "a chat that draws markdown gets the markdown table"
+    );
+    let plain = Limits {
+        dialect: Dialect::Plain,
+        ..limits()
+    };
+    assert_eq!(
+        said(&mut Chat::with(plain, gate())),
+        [Op::Card {
+            source: "/memory".into(),
+            text: "scope · name\nuser · type".into()
+        }],
+        "a chat with no markdown keeps the one-line-per-row fold"
+    );
+}
+
+/// A result that is both a sentence and a view: the view is a block of its
+/// own, so the sentence does not run into it.
+#[test]
+fn a_message_and_a_view_are_two_blocks() {
+    let mut chat = Chat::new();
+    let mine = IntentId::mint();
+    chat.deliverer.expecting(mine.clone(), "/memory".into());
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::IntentAck {
+                intent: mine,
+                outcome: IntentOutcome::Applied {
+                    result: serde_json::json!({
+                        "message": "2 memories",
+                        "view": {
+                            "kind": "table",
+                            "headers": ["scope", "name"],
+                            "rows": [["user", "type"]],
+                        },
+                    }),
+                },
+            },
+        )),
+        [Op::Card {
+            source: "/memory".into(),
+            text: "2 memories\n\n| scope | name |\n| --- | --- |\n| user | type |".into()
         }]
     );
 }

@@ -20,7 +20,7 @@ use bingo_sdk::{
 };
 
 use crate::gate::Gate;
-use crate::limits::Limits;
+use crate::limits::{Dialect, Limits};
 use crate::question::{Question, ladder, withdrawn};
 
 /// What a conversation is asked to do next.
@@ -210,19 +210,26 @@ impl Deliverer {
 
     /// What a command said, in the words this chat can carry: its message,
     /// then its view — folded by the sdk, which is the one degrade an IM
-    /// channel is meant to show (ADR-0013).
+    /// channel is meant to show (ADR-0013). A chat that draws markdown gets
+    /// the sdk's markdown walk instead, because a table a platform renders is
+    /// a table and the same table in ` · ` is a paragraph (ADR-0016 §6).
     fn applied(&self, source: &str, result: &Value) -> Vec<Op> {
         let message = result.get("message").and_then(Value::as_str);
         let view = result
             .get("view")
             .and_then(|view| serde_json::from_value::<View>(view.clone()).ok())
-            .map(|view| view.fold());
+            .map(|view| match self.limits.dialect {
+                Dialect::Markdown => view.fold_markdown(),
+                Dialect::Plain => view.fold(),
+            });
         let said = [message.map(str::to_string), view]
             .into_iter()
             .flatten()
             .filter(|part| !part.trim().is_empty())
             .collect::<Vec<_>>()
-            .join("\n");
+            // A blank line between the two: a markdown block — a table, a
+            // list — is not a block while a paragraph runs into it.
+            .join("\n\n");
         (!said.is_empty())
             .then(|| Op::Card {
                 source: source.to_string(),

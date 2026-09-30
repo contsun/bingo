@@ -23,12 +23,18 @@ const LABELS: [(&str, &str); 7] = [
     ("tokens", "tokens"),
 ];
 
-/// A table's header line, whole. `View::Table` joins its headers with ` · `,
-/// so this is what an empty table folds to as well — which is why the empties
-/// below are matched first.
+/// A table's header row, whole — the markdown row a chat that draws markdown
+/// is sent. The row under it is the rule `View::Table` writes, which needs no
+/// translating and is left alone.
 const HEADERS: [(&str, &str); 2] = [
-    ("scope · name · type · description", "范围 · 名称 · 类型 · 说明"),
-    ("server · status · tools · auth", "服务 · 状态 · 工具 · 认证"),
+    (
+        "| scope | name | type | description |",
+        "| 范围 | 名称 | 类型 | 说明 |",
+    ),
+    (
+        "| server | status | tools | auth |",
+        "| 服务 | 状态 | 工具 | 认证 |",
+    ),
 ];
 
 /// Whole lines a command answers with, said again.
@@ -59,13 +65,33 @@ pub(super) fn command(source: &str, text: &str) -> String {
 /// Nothing to show, said out loud: a bare header row reads as a failure
 /// rather than as an answer.
 fn emptiness(source: &str, text: &str) -> Option<&'static str> {
-    let bare = text.trim();
     if source != "/mcp" {
         return None;
     }
-    // Headers only: no row under them, and no `label: value` either.
-    let rows = bare.lines().count();
-    (rows == 1 && !bare.contains(": ")).then_some("暂无 MCP 服务")
+    // Headers only: no row under them, and no `label: value` either. A
+    // markdown table carries the rule under its header, so the two lines are
+    // a header and a rule — and a table with one row under it is three.
+    let lines: Vec<&str> = text
+        .trim()
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect();
+    let empty = match lines.as_slice() {
+        [headers] => !headers.contains(": "),
+        [headers, rule] => !headers.contains(": ") && is_rule(rule),
+        _ => false,
+    };
+    empty.then_some("暂无 MCP 服务")
+}
+
+/// Whether a line is a markdown table's rule: cells of dashes, no words.
+fn is_rule(line: &str) -> bool {
+    let cells: Vec<&str> = line.trim_matches('|').split('|').map(str::trim).collect();
+    !cells.is_empty()
+        && cells
+            .iter()
+            .all(|cell| !cell.is_empty() && cell.chars().all(|ch| ch == '-' || ch == ':'))
 }
 
 /// One line — a header row, a labelled value, or a sentence.
