@@ -217,7 +217,7 @@ impl View {
                 label,
             } => progress(*value, *total, label.as_deref()),
             View::Badge { text, .. } => format!("[{text}]"),
-            View::Tree { nodes } => lines(nodes.iter().flat_map(|node| node.drawn(table, 0))),
+            View::Tree { nodes } => lines(nodes.iter().flat_map(|node| node.fold(0))),
             View::Stack { children } | View::Columns { children } => children
                 .iter()
                 .map(|child| child.drawn(table))
@@ -290,24 +290,25 @@ impl Table {
 fn markdown_row(cells: &[String]) -> String {
     let cells: Vec<String> = cells
         .iter()
-        .map(|cell| cell.replace('|', "\\|").replace('\n', "<br>"))
+        .map(|cell| {
+            cell.replace("\r\n", "\n")
+                .replace('\r', "\n")
+                .replace('|', "\\|")
+                .replace('\n', "<br>")
+        })
         .collect();
     format!("| {} |", cells.join(" | "))
 }
 
 impl TreeNode {
-    fn drawn(&self, table: Table, depth: usize) -> Vec<String> {
+    fn fold(&self, depth: usize) -> Vec<String> {
         let badge = self
             .badge
             .as_ref()
             .map(|badge| format!(" [{badge}]"))
             .unwrap_or_default();
         let mut out = vec![format!("{}{}{badge}", "  ".repeat(depth), self.label)];
-        out.extend(
-            self.children
-                .iter()
-                .flat_map(|child| child.drawn(table, depth + 1)),
-        );
+        out.extend(self.children.iter().flat_map(|child| child.fold(depth + 1)));
         out
     }
 }
@@ -520,6 +521,20 @@ mod tests {
             awkward.fold_markdown(),
             "| a |\n| --- |\n| x \\| y |\n| x<br>y |"
         );
+    }
+
+    #[test]
+    fn every_line_ending_stays_inside_its_table_cell() {
+        for ending in ["\n", "\r\n", "\r"] {
+            let table = View::Table {
+                headers: vec![format!("tool{ending}name"), "description".into()],
+                rows: vec![vec!["Read".into(), format!("first{ending}second")]],
+            };
+            assert_eq!(
+                table.fold_markdown(),
+                "| tool<br>name | description |\n| --- | --- |\n| Read | first<br>second |"
+            );
+        }
     }
 
     /// The walk is the whole view, not the top of it: a table inside a stack

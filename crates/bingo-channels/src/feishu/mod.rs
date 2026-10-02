@@ -24,7 +24,6 @@ pub mod posted;
 pub mod send;
 pub mod token;
 pub mod upload;
-pub mod words;
 pub mod ws;
 
 use std::collections::{BTreeMap, HashMap};
@@ -437,10 +436,6 @@ impl ChannelAdapter for Feishu {
         }
     }
 
-    fn command_result(&self, source: &str, text: &str) -> String {
-        words::command(source, text)
-    }
-
     async fn run(&self, inbox: Inbox, cancel: CancellationToken) -> Result<(), ChannelError> {
         // A credential that is missing is refused here rather than at
         // registration: an unconfigured chat must not stop `bingo --print`.
@@ -550,7 +545,7 @@ impl Edit for Feishu {
         let Some(Handle::Card(card_id)) = Handle::of(at) else {
             return Err(ChannelError::Unsupported("editing a plain message"));
         };
-        self.fill(&card_id, text).await?;
+        self.write(&card_id, text).await?;
         self.streaming(&card_id, false).await
     }
 }

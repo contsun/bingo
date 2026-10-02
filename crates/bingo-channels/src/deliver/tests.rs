@@ -517,7 +517,7 @@ fn the_timer_is_only_armed_while_something_is_held() {
 fn a_command_result_is_posted_for_this_chats_own_write() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone(), "/status".into());
+    chat.deliverer.expecting(mine.clone());
 
     assert_eq!(
         chat.feed(frame(
@@ -530,7 +530,6 @@ fn a_command_result_is_posted_for_this_chats_own_write() {
             },
         )),
         [Op::Card {
-            source: "/status".into(),
             text: "nothing is remembered yet".into()
         }]
     );
@@ -558,7 +557,7 @@ fn a_write_this_chat_never_made_is_not_reported_here() {
 fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone(), "/status".into());
+    chat.deliverer.expecting(mine.clone());
     assert_eq!(
         chat.feed(frame(
             1,
@@ -593,7 +592,7 @@ fn a_prompts_own_ack_says_nothing_because_the_turn_says_it() {
 fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone(), "/status".into());
+    chat.deliverer.expecting(mine.clone());
     assert_eq!(
         chat.feed(frame(
             1,
@@ -610,12 +609,116 @@ fn a_command_view_is_folded_into_the_words_a_chat_can_carry() {
             },
         )),
         [Op::Card {
-            source: "/status".into(),
             text: "model: fake-1
 mode: default"
                 .into()
         }]
     );
+}
+
+#[test]
+fn a_queued_command_keeps_ownership_until_its_terminal_ack() {
+    for outcome in [
+        IntentOutcome::Applied {
+            result: serde_json::json!({"message": "enabled files; dialling it"}),
+        },
+        IntentOutcome::Rejected {
+            error: KernelError::new(ErrorCode::InvalidInput, "no mcp server named files"),
+        },
+    ] {
+        let mut chat = Chat::new();
+        let intent = IntentId::mint();
+        chat.deliverer.expecting(intent.clone());
+        assert!(
+            chat.feed(frame(
+                1,
+                Event::IntentAck {
+                    intent: intent.clone(),
+                    outcome: IntentOutcome::Queued { position: 1 },
+                }
+            ))
+            .is_empty()
+        );
+        let terminal = Event::IntentAck { intent, outcome };
+        assert!(matches!(
+            chat.feed(frame(2, terminal.clone())).as_slice(),
+            [Op::Card { .. }]
+        ));
+        assert!(
+            chat.feed(frame(3, terminal)).is_empty(),
+            "only a terminal ack spends ownership"
+        );
+    }
+}
+
+#[test]
+fn command_results_obey_the_platform_length_and_dialect() {
+    let raw = format!("```text\n{}\n```", "é𝄞".repeat(50));
+    for dialect in [Dialect::Plain, Dialect::Markdown] {
+        for encoding in [Encoding::Chars, Encoding::Utf8Bytes, Encoding::Utf16Units] {
+            let limits = Limits {
+                max_text: (40, encoding),
+                dialect,
+                ..limits()
+            };
+            let expected = limits.clip(&dialect.render(&raw)).into_owned();
+            for outcome in [
+                IntentOutcome::Applied {
+                    result: serde_json::json!({"message": raw}),
+                },
+                IntentOutcome::Applied {
+                    result: serde_json::json!({"view": {"kind": "markdown", "text": raw}}),
+                },
+                IntentOutcome::Rejected {
+                    error: KernelError::new(ErrorCode::InvalidInput, &raw),
+                },
+            ] {
+                let mut chat = Chat::with(limits.clone(), gate());
+                let intent = IntentId::mint();
+                chat.deliverer.expecting(intent.clone());
+                let ops = chat.feed(frame(1, Event::IntentAck { intent, outcome }));
+                let [Op::Card { text, .. }] = ops.as_slice() else {
+                    panic!("expected a card: {ops:?}")
+                };
+                assert_eq!(text, &expected);
+                assert!(encoding.measure(text) <= 40);
+            }
+        }
+    }
+}
+
+#[test]
+fn a_large_memory_table_fits_the_feishu_budget() {
+    let limits = Limits {
+        max_text: (20_000, Encoding::Utf8Bytes),
+        ..limits()
+    };
+    let mut chat = Chat::with(limits, gate());
+    let intent = IntentId::mint();
+    chat.deliverer.expecting(intent.clone());
+    let rows: Vec<_> = (0..300)
+        .map(|n| {
+            vec![
+                "user".to_string(),
+                format!("memory-{n}"),
+                "user".to_string(),
+                "A long but ordinary description of a remembered preference.".to_string(),
+            ]
+        })
+        .collect();
+    let result = serde_json::json!({"view": {"kind": "table", "headers": ["scope", "name", "type", "description"], "rows": rows}});
+    let ops = chat.feed(frame(
+        1,
+        Event::IntentAck {
+            intent,
+            outcome: IntentOutcome::Applied { result },
+        },
+    ));
+    let [Op::Card { text, .. }] = ops.as_slice() else {
+        panic!("expected a card: {ops:?}")
+    };
+    assert!(text.len() <= 20_000);
+    assert!(text.ends_with('…'));
 }
 
 /// A command's view of a table, said to a chat that draws markdown and to one
@@ -633,7 +736,7 @@ fn a_view_table_is_a_table_to_a_chat_that_draws_markdown() {
     });
     let said = |chat: &mut Chat| {
         let mine = IntentId::mint();
-        chat.deliverer.expecting(mine.clone(), "/memory".into());
+        chat.deliverer.expecting(mine.clone());
         chat.feed(frame(
             1,
             Event::IntentAck {
@@ -647,7 +750,6 @@ fn a_view_table_is_a_table_to_a_chat_that_draws_markdown() {
     assert_eq!(
         said(&mut Chat::new()),
         [Op::Card {
-            source: "/memory".into(),
             text: "| scope | name |\n| --- | --- |\n| user | type |".into()
         }],
         "a chat that draws markdown gets the markdown table"
@@ -659,7 +761,6 @@ fn a_view_table_is_a_table_to_a_chat_that_draws_markdown() {
     assert_eq!(
         said(&mut Chat::with(plain, gate())),
         [Op::Card {
-            source: "/memory".into(),
             text: "scope · name\nuser · type".into()
         }],
         "a chat with no markdown keeps the one-line-per-row fold"
@@ -672,7 +773,7 @@ fn a_view_table_is_a_table_to_a_chat_that_draws_markdown() {
 fn a_message_and_a_view_are_two_blocks() {
     let mut chat = Chat::new();
     let mine = IntentId::mint();
-    chat.deliverer.expecting(mine.clone(), "/memory".into());
+    chat.deliverer.expecting(mine.clone());
     assert_eq!(
         chat.feed(frame(
             1,
@@ -691,7 +792,6 @@ fn a_message_and_a_view_are_two_blocks() {
             },
         )),
         [Op::Card {
-            source: "/memory".into(),
             text: "2 memories\n\n| scope | name |\n| --- | --- |\n| user | type |".into()
         }]
     );

@@ -786,61 +786,97 @@ async fn a_card_that_timed_out_is_opened_again_too() {
     );
 }
 
-/// A command's result is written by the plugin that owns it, in English; the
-/// chat reading it is not. These are the shapes this surface knows, said
-/// again — matched whole, so a memory the person named `type` keeps its name.
-#[test]
-fn a_commands_result_is_said_in_the_language_the_chat_reads() {
-    // `/status` folds its key-values one per line.
+async fn finish_recovers(code: i64) {
+    let server = MockServer::start().await;
+    let feishu = feishu(&server).await;
+    ok(&server, "POST", CARDS, json!({ "card_id": "ctp_1" })).await;
+    ok(&server, "POST", MESSAGES, json!({ "message_id": "om_1" })).await;
+    let element = format!("{CARDS}/ctp_1/elements/{}/content", card::ANSWER);
+    let settings = format!("{CARDS}/ctp_1/settings");
+    ok(&server, "PATCH", &settings, json!({})).await;
+    Mock::given(method("PUT"))
+        .and(path(&element))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "code": code, "msg": "card streaming timeout or closed",
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("PUT"))
+        .and(path(&element))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "code": 0 })))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+    let posted = feishu
+        .send(&Conversation::direct("oc_1"), "", Mode::Stream)
+        .await
+        .expect("a card");
+    feishu
+        .edit()
+        .expect("an editor")
+        .finish(&posted, "Completed after a long-running tool.")
+        .await
+        .expect("the final write recovers too");
+    let writes = bodies(&server, &element).await;
+    assert_eq!(writes.len(), 2);
+    assert_eq!(writes[1]["content"], "Completed after a long-running tool.");
+    let settings = bodies(&server, &settings).await;
+    assert_eq!(settings.len(), 2, "renew before finishing");
     assert_eq!(
-        words::command(
-            "/status",
-            "session: ses_1\ncwd: /tmp\nprovider: p\nmodel: m\nmode: default\n\
-             context: not measured yet\ntokens: 0 in · 0 out"
-        ),
-        "会话: ses_1\n工作目录: /tmp\n模型服务: p\n模型: m\n权限模式: default\n\
-         上下文: 尚未测量\ntokens: 0 in · 0 out"
+        settings[0]["settings"],
+        json!(r#"{"config":{"streaming_mode":true}}"#)
     );
+    assert_eq!(
+        settings[1]["settings"],
+        json!(r#"{"config":{"streaming_mode":false}}"#)
+    );
+    assert!(settings[0]["sequence"].as_u64().unwrap() < writes[1]["sequence"].as_u64().unwrap());
+    assert!(writes[1]["sequence"].as_u64().unwrap() < settings[1]["sequence"].as_u64().unwrap());
+}
 
-    // An empty result says so, rather than showing bare headers — whether the
-    // table came as a markdown one or as the plain dialect's joined row.
-    assert_eq!(
-        words::command(
-            "/mcp",
-            "| server | status | tools | auth |\n| --- | --- | --- | --- |"
-        ),
-        "暂无 MCP 服务"
-    );
-    assert_eq!(
-        words::command("/mcp", "server · status · tools · auth"),
-        "暂无 MCP 服务"
-    );
-    assert_eq!(
-        words::command(
-            "/schedule",
-            "no schedules yet\nschedules: held by this process"
-        ),
-        "暂无定时任务\n定时任务由当前进程持有"
-    );
+#[tokio::test]
+async fn finishing_recovers_a_streaming_timeout() {
+    finish_recovers(200_850).await;
+}
 
-    // A result that is a sentence.
-    assert!(
-        words::command(
-            "/memory",
-            "nothing is remembered yet; memories go in /a and /b"
-        )
-        .starts_with("尚未记录任何记忆")
-    );
+#[tokio::test]
+async fn finishing_recovers_a_closed_stream() {
+    finish_recovers(300_309).await;
+}
 
-    // A table's header row, whole, and its rule left alone — and its rows
-    // exactly alone, so a memory the person named `type` stays `type`.
+#[tokio::test]
+async fn finishing_renews_an_old_card_before_its_last_write() {
+    let server = MockServer::start().await;
+    let feishu = feishu(&server).await;
+    ok(&server, "POST", CARDS, json!({ "card_id": "ctp_1" })).await;
+    ok(&server, "POST", MESSAGES, json!({ "message_id": "om_1" })).await;
+    let element = format!("{CARDS}/ctp_1/elements/{}/content", card::ANSWER);
+    let settings = format!("{CARDS}/ctp_1/settings");
+    ok(&server, "PUT", &element, json!({})).await;
+    ok(&server, "PATCH", &settings, json!({})).await;
+    let posted = feishu
+        .send(&Conversation::direct("oc_1"), "", Mode::Stream)
+        .await
+        .expect("a card");
+    locked(&feishu.streaming_since).insert("ctp_1".to_string(), Instant::now() - STREAMING_RENEWED);
+    feishu
+        .edit()
+        .expect("an editor")
+        .finish(&posted, "Done.")
+        .await
+        .expect("a final write");
+    let settings = bodies(&server, &settings).await;
+    assert_eq!(settings.len(), 2);
     assert_eq!(
-        words::command(
-            "/memory",
-            "| scope | name | type | description |\n| --- | --- | --- | --- |\n\
-             | user | type | project | a memory named type |"
-        ),
-        "| 范围 | 名称 | 类型 | 说明 |\n| --- | --- | --- | --- |\n\
-         | user | type | project | a memory named type |"
+        settings[0]["settings"],
+        json!(r#"{"config":{"streaming_mode":true}}"#)
     );
+    assert_eq!(
+        settings[1]["settings"],
+        json!(r#"{"config":{"streaming_mode":false}}"#)
+    );
+    let writes = bodies(&server, &element).await;
+    assert!(settings[0]["sequence"].as_u64().unwrap() < writes[0]["sequence"].as_u64().unwrap());
 }

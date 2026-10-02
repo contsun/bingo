@@ -39,9 +39,8 @@ pub enum Op {
     Status { text: String },
     /// A result that stands on its own — a command's answer, not a turn's.
     /// Shown the way an answer is where the platform has a card for one, and
-    /// as a message where it has not. `source` is the command it answered, so
-    /// the platform can say it in its own words.
-    Card { source: String, text: String },
+    /// as a message where it has not.
+    Card { text: String },
     /// A question this conversation showed is settled, wherever from.
     Resolved {
         question: InteractionId,
@@ -117,11 +116,8 @@ pub struct Deliverer {
     asked: Vec<Question>,
     /// Writes this chat made that the kernel has not answered yet, so a
     /// command's result is posted here and a result earned elsewhere is not
-    /// (ADR-0016: the ack carries the intent that caused it). The text each
-    /// one carried is kept beside it, because what a command answers with is
-    /// read differently per command — an empty table from `/mcp` is not the
-    /// same news as an empty table from anywhere else.
-    pending: Vec<(IntentId, String)>,
+    /// (ADR-0016: the ack carries the intent that caused it).
+    pending: Vec<IntentId>,
 }
 
 impl std::fmt::Debug for Deliverer {
@@ -149,14 +145,14 @@ impl Deliverer {
     }
 
     /// Remember a write this chat made, so its outcome is reported here. One
-    /// entry per submission, cleared by the ack that answers it; the cap is
-    /// only for the ack that never comes, which must not grow without bound.
-    pub fn expecting(&mut self, intent: IntentId, text: String) {
+    /// entry per submission, cleared by its terminal ack; the cap is only
+    /// for the ack that never comes, which must not grow without bound.
+    pub fn expecting(&mut self, intent: IntentId) {
         const REMEMBERED: usize = 64;
         if self.pending.len() >= REMEMBERED {
             self.pending.remove(0);
         }
-        self.pending.push((intent, text));
+        self.pending.push(intent);
     }
 
     /// One frame, already folded into `state` by the caller. For a frame from
@@ -188,21 +184,18 @@ impl Deliverer {
     /// refusal — an unknown command answers nothing else, so dropping the
     /// refusal would leave whoever typed it with silence.
     fn acknowledged(&mut self, intent: &IntentId, outcome: &IntentOutcome) -> Vec<Op> {
-        let Some(at) = self
-            .pending
-            .iter()
-            .position(|(pending, _)| pending == intent)
-        else {
+        let Some(at) = self.pending.iter().position(|pending| pending == intent) else {
             return Vec::new();
         };
-        let (_, source) = self.pending.remove(at);
+        // Queued commands answer again under the same intent when they run.
+        if matches!(outcome, IntentOutcome::Queued { .. }) {
+            return Vec::new();
+        }
+        self.pending.remove(at);
         match outcome {
-            IntentOutcome::Applied { result } => self.applied(&source, result),
-            // A refusal is news: an unknown command answers nothing else, so
-            // dropping it would leave whoever typed it with silence.
+            IntentOutcome::Applied { result } => self.applied(result),
             IntentOutcome::Rejected { error } => vec![Op::Card {
-                source,
-                text: error.message.clone(),
+                text: self.laid_out(&error.message),
             }],
             _ => Vec::new(),
         }
@@ -213,7 +206,7 @@ impl Deliverer {
     /// channel is meant to show (ADR-0013). A chat that draws markdown gets
     /// the sdk's markdown walk instead, because a table a platform renders is
     /// a table and the same table in ` · ` is a paragraph (ADR-0016 §6).
-    fn applied(&self, source: &str, result: &Value) -> Vec<Op> {
+    fn applied(&self, result: &Value) -> Vec<Op> {
         let message = result.get("message").and_then(Value::as_str);
         let view = result
             .get("view")
@@ -232,8 +225,7 @@ impl Deliverer {
             .join("\n\n");
         (!said.is_empty())
             .then(|| Op::Card {
-                source: source.to_string(),
-                text: said,
+                text: self.laid_out(&said),
             })
             .into_iter()
             .collect()
@@ -267,6 +259,7 @@ impl Deliverer {
         self.delivered.clear();
         self.streaming = None;
         self.asked.clear();
+        self.pending.clear();
     }
 
     /// When `tick` is worth calling.
