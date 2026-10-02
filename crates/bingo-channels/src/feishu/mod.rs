@@ -18,6 +18,7 @@ pub mod card;
 pub mod chunks;
 pub mod content;
 pub mod event;
+mod footer;
 pub mod frame;
 pub mod merged;
 pub mod posted;
@@ -32,7 +33,7 @@ use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use bingo_sdk::CancellationToken;
+use bingo_sdk::{CancellationToken, SessionState};
 use serde_json::{Value, json};
 
 use crate::adapter::{
@@ -434,6 +435,10 @@ impl ChannelAdapter for Feishu {
             "esc" | "escape" | "stop" => Some(ChannelCommand::Stop),
             _ => None,
         }
+    }
+
+    fn final_answer(&self, text: &str, state: &SessionState) -> String {
+        footer::append(text, state, &self.limits)
     }
 
     async fn run(&self, inbox: Inbox, cancel: CancellationToken) -> Result<(), ChannelError> {
