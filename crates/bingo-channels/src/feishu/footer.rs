@@ -10,69 +10,67 @@ pub(super) fn append(text: &str, state: &SessionState, limits: &Limits) -> Strin
     if text.is_empty() {
         return String::new();
     }
-    let footer = line(state, Language::of(text));
+    let footer = line(state);
     let mut answer_limits = limits.clone();
     answer_limits.max_text.0 = answer_limits
         .max_text
         .0
         .saturating_sub(SEPARATOR.len() + footer.len());
-    let answer = answer_limits.clip(text);
+    let answer = clipped_answer(text, &answer_limits);
     format!("{answer}{SEPARATOR}{footer}")
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Language {
-    Chinese,
-    English,
-}
-
-impl Language {
-    fn of(text: &str) -> Self {
-        let (mut han, mut english_words) = (0, 0);
-        let mut fenced = false;
-        for line in text.lines() {
-            let start = line.trim_start();
-            if start.starts_with("```") || start.starts_with("~~~") {
-                fenced = !fenced;
-                continue;
-            }
-            if fenced {
-                continue;
-            }
-            let (mut inline, mut word) = (false, false);
-            for character in line.chars() {
-                if character == '`' {
-                    inline = !inline;
-                    word = false;
-                } else if !inline && is_han(character) {
-                    han += 1;
-                    word = false;
-                } else if !inline && character.is_ascii_alphabetic() {
-                    if !word {
-                        english_words += 1;
-                    }
-                    word = true;
-                } else {
-                    word = false;
-                }
-            }
+/// The footer must sit outside code even when a cut removes its closing fence.
+fn clipped_answer(text: &str, limits: &Limits) -> String {
+    let mut room = limits.clone();
+    loop {
+        if room.max_text.0 < '…'.len_utf8() {
+            return String::new();
         }
-        if han > 0 && han >= english_words {
-            Self::Chinese
-        } else {
-            Self::English
+        let answer = room.clip(text);
+        let Some(fence) = open_fence(&answer) else {
+            return answer.into_owned();
+        };
+        let closing = format!("\n{fence}");
+        if answer.len() + closing.len() <= limits.max_text.0 {
+            return format!("{answer}{closing}");
         }
+        // The smaller cut can cross a delimiter, so read its fence again.
+        room.max_text.0 = limits.max_text.0.saturating_sub(closing.len());
     }
 }
 
-fn is_han(character: char) -> bool {
-    ('\u{3400}'..='\u{4dbf}').contains(&character)
-        || ('\u{4e00}'..='\u{9fff}').contains(&character)
-        || ('\u{f900}'..='\u{faff}').contains(&character)
-        || ('\u{20000}'..='\u{2a6df}').contains(&character)
+fn open_fence(text: &str) -> Option<&str> {
+    let mut open: Option<&str> = None;
+    for line in text.lines() {
+        let start = line.trim_start_matches(' ');
+        if line.len() - start.len() > 3 {
+            continue;
+        }
+        let Some(marker @ (b'`' | b'~')) = start.bytes().next() else {
+            continue;
+        };
+        let width = start.bytes().take_while(|byte| *byte == marker).count();
+        if width < 3 {
+            continue;
+        }
+        let (fence, rest) = start.split_at(width);
+        match open {
+            Some(opening)
+                if opening.as_bytes()[0] == marker
+                    && width >= opening.len()
+                    && rest.trim_matches([' ', '\t']).is_empty() =>
+            {
+                open = None
+            }
+            None if marker != b'`' || !rest.contains('`') => open = Some(fence),
+            _ => {}
+        }
+    }
+    open
 }
 
-fn line(state: &SessionState, language: Language) -> String {
+fn line(state: &SessionState) -> String {
     let mut parts = vec![
         state
             .summary
@@ -87,10 +85,7 @@ fn line(state: &SessionState, language: Language) -> String {
         .get("thinking")
         .and_then(|value| serde_json::from_value::<Effort>(value.clone()).ok())
     {
-        parts.push(match language {
-            Language::Chinese => format!("思考强度：{}", chinese_effort(level)),
-            Language::English => format!("effort:{}", level.name()),
-        });
+        parts.push(format!("effort:{}", level.name()));
     }
     let usage = state
         .turn
@@ -98,45 +93,18 @@ fn line(state: &SessionState, language: Language) -> String {
         .map(|turn| turn.usage)
         .or_else(|| state.last_turn.as_ref().map(|turn| turn.usage));
     if let Some(usage) = usage.filter(|usage| *usage != Usage::default()) {
-        match language {
-            Language::Chinese => {
-                parts.push(format!("输出 {}", count(usage.output_tokens)));
-                parts.push(format!(
-                    "累计输入 {} 缓存写 {} 缓存读 {}",
-                    count(usage.input_total()),
-                    count(usage.cache_write_tokens),
-                    count(usage.cache_read_tokens)
-                ));
-            }
-            Language::English => {
-                parts.push(format!("out {}", count(usage.output_tokens)));
-                parts.push(format!(
-                    "in {} cw {} cr {}",
-                    count(usage.input_total()),
-                    count(usage.cache_write_tokens),
-                    count(usage.cache_read_tokens)
-                ));
-            }
-        }
+        parts.push(format!("out {}", count(usage.output_tokens)));
+        parts.push(format!(
+            "in {} cw {} cr {}",
+            count(usage.input_total()),
+            count(usage.cache_write_tokens),
+            count(usage.cache_read_tokens)
+        ));
     }
     if let Some(context) = state.context.filter(|context| context.window > 0) {
-        parts.push(match language {
-            Language::Chinese => format!("上下文 {}%", context.percent()),
-            Language::English => format!("ctx {}%", context.percent()),
-        });
+        parts.push(format!("ctx {}%", context.percent()));
     }
     parts.join(" · ")
-}
-
-fn chinese_effort(level: Effort) -> &'static str {
-    match level {
-        Effort::Minimal => "最低",
-        Effort::Low => "低",
-        Effort::Medium => "中",
-        Effort::High => "高",
-        Effort::XHigh => "极高",
-        Effort::Max => "最高",
-    }
 }
 
 fn count(value: u64) -> String {
@@ -211,28 +179,25 @@ mod tests {
         );
         assert_eq!(
             append("已经完成。", &state, &limits(20_000)),
-            "已经完成。\n\n---\ngpt-6-sol · 思考强度：极高 · 输出 328 · 累计输入 193.4k 缓存写 0 缓存读 193k · 上下文 75%"
+            "已经完成。\n\n---\ngpt-6-sol · effort:xhigh · out 328 · in 193.4k cw 0 cr 193k · ctx 75%"
         );
     }
 
     #[test]
-    fn the_answer_language_ignores_code_and_short_quotes() {
-        assert_eq!(
-            Language::of("Tests passed. `你好` means hello."),
-            Language::English
-        );
-        assert_eq!(
-            Language::of("The phrase 你好 means hello.\n```text\n中文代码\n```"),
-            Language::English
-        );
-        assert_eq!(
-            Language::of("测试完成，`cargo test` 全部通过。"),
-            Language::Chinese
-        );
-        assert_eq!(
-            Language::of("Great!\n```sh\necho 中文\n```"),
-            Language::English
-        );
+    fn footer_labels_are_english_whatever_the_answer_language_or_code() {
+        let mut state = fixtures::state();
+        state.config.kernel = json!({ "thinking": "high" });
+        for text in [
+            "Tests passed. `你好` means hello.",
+            "测试完成，`cargo test` 全部通过。",
+            "Great!\n```sh\necho 中文\n```",
+            "Done. ``你好你好你好你好``",
+        ] {
+            assert_eq!(
+                append(text, &state, &limits(20_000)),
+                format!("{text}\n\n---\nfake-1 · effort:high")
+            );
+        }
     }
 
     #[test]
@@ -262,6 +227,73 @@ mod tests {
             "Question?\n\n---\nfake-1"
         );
         assert_eq!(append("", &state, &limits(20_000)), "");
+    }
+
+    #[test]
+    fn the_footer_stays_outside_a_valid_fenced_answer_at_the_limit() {
+        let state = fixtures::state();
+        let text = format!("```text\n{}\n```", "x".repeat(19_988));
+        assert_eq!(text.len(), 20_000);
+        let result = append(&text, &state, &limits(20_000));
+        assert!(result.len() <= 20_000);
+        let (answer, _) = result.rsplit_once(SEPARATOR).unwrap();
+        assert!(
+            answer.ends_with("\n```"),
+            "footer is inside an unclosed code fence"
+        );
+    }
+
+    #[test]
+    fn complete_fences_are_unchanged_and_clipped_fences_are_closed() {
+        let state = fixtures::state();
+        for fence in ["```", "`````", "~~~", "~~~~~~"] {
+            let text = format!("{fence}text\n{}\n{fence}", "你好🙂".repeat(20));
+            assert_eq!(
+                append(&text, &state, &limits(20_000)),
+                format!("{text}{SEPARATOR}fake-1")
+            );
+            let result = append(&text, &state, &limits(100));
+            assert!(result.len() <= 100);
+            assert!(result.ends_with(&format!("\n{fence}{SEPARATOR}fake-1")));
+        }
+    }
+
+    #[test]
+    fn clipping_through_fence_delimiters_never_encloses_the_footer() {
+        let state = fixtures::state();
+        for fence in ["```", "`````", "~~~", "~~~~~~"] {
+            let text = format!("prefix\n{fence}text\n你好🙂\n{fence}\nend");
+            for max in 15..=text.len() + 12 {
+                let result = append(&text, &state, &limits(max));
+                let (answer, footer) = result.rsplit_once(SEPARATOR).unwrap();
+                assert_eq!(footer, "fake-1");
+                assert!(result.len() <= max, "max {max}: {result:?}");
+                assert_eq!(open_fence(answer), None, "max {max}: {result:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_fence_closes_only_with_its_own_marker_and_enough_characters() {
+        assert_eq!(
+            open_fence("````rust\n```\n~~~\n````` trailing"),
+            Some("````")
+        );
+        assert_eq!(open_fence("````rust\n```\n  `````  \n"), None);
+        assert_eq!(open_fence("~~~text\n```\n~~\n~~~"), None);
+        assert_eq!(open_fence("   ~~~~text\n~~~"), Some("~~~~"));
+        assert_eq!(open_fence("    ```\nindented code"), None);
+        assert_eq!(open_fence("```not ` a fence"), None);
+        assert_eq!(open_fence("```\ncode\n```\u{a0}"), Some("```"));
+    }
+
+    #[test]
+    fn a_partial_answer_is_closed_even_without_clipping() {
+        let state = fixtures::state();
+        assert_eq!(
+            append("```rust\nlet x = 1;", &state, &limits(20_000)),
+            "```rust\nlet x = 1;\n```\n\n---\nfake-1"
+        );
     }
 
     #[test]
