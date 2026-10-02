@@ -286,7 +286,12 @@ impl Runner {
         text: &str,
         question: Option<Question>,
     ) -> Result<(), ChannelError> {
-        let said = self.say(text).await;
+        let answer = self
+            .states
+            .get(&self.root)
+            .map(|state| self.adapter.final_answer(text, state))
+            .unwrap_or_else(|| text.to_string());
+        let said = self.say(&answer).await;
         let asked = match question {
             Some(question) => self.ask(question).await,
             None => Ok(()),
