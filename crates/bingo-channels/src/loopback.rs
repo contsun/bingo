@@ -50,6 +50,7 @@ impl Default for Config {
             limits: Limits {
                 max_text: (4000, Encoding::Chars),
                 dialect: Dialect::Markdown,
+                locale: crate::limits::Locale::En,
                 max_actions: 3,
                 max_label: 40,
             },

@@ -316,7 +316,7 @@ pub fn withdrawn(reason: &CancelReason) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::{Dialect, Encoding};
+    use crate::limits::{Dialect, Encoding, Locale};
     use bingo_sdk::{Preview, QuestionOption, SessionId};
     use jiff::Timestamp;
 
@@ -324,6 +324,7 @@ mod tests {
         Limits {
             max_text: (4000, Encoding::Chars),
             dialect: Dialect::Markdown,
+            locale: Locale::En,
             max_actions: 3,
             max_label: 20,
         }

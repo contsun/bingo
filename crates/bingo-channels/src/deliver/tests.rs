@@ -15,6 +15,7 @@ fn limits() -> Limits {
     Limits {
         max_text: (4000, Encoding::Chars),
         dialect: Dialect::Markdown,
+        locale: crate::limits::Locale::En,
         max_actions: 3,
         max_label: 40,
     }
@@ -533,6 +534,66 @@ fn a_command_result_is_posted_for_this_chats_own_write() {
             text: "nothing is remembered yet".into()
         }]
     );
+}
+
+/// A command whose result is a recorded item — a login's receipt, a
+/// reconnect's outcome — answers the chat. Nothing else draws it: a shell
+/// line has its own status, and an action has no line at all, so a `/login`
+/// that worked used to answer silence.
+#[test]
+fn a_recorded_item_this_chat_asked_for_is_said_here() {
+    let mut chat = Chat::new();
+    let mine = IntentId::mint();
+    chat.deliverer.expecting(mine.clone());
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::ItemCompleted {
+                item: action_item(Some(mine), "logged in to anthropic"),
+            },
+        )),
+        [Op::Card {
+            text: "logged in to anthropic".into()
+        }]
+    );
+}
+
+/// The other half: a receipt earned by another surface is not this chat's to
+/// show, and an item that carries no receipt says nothing.
+#[test]
+fn a_recorded_item_from_somewhere_else_is_not_said_here() {
+    let mut chat = Chat::new();
+    chat.deliverer.expecting(IntentId::mint());
+    assert_eq!(
+        chat.feed(frame(
+            1,
+            Event::ItemCompleted {
+                item: action_item(Some(IntentId::mint()), "somebody else's receipt"),
+            },
+        )),
+        []
+    );
+    assert_eq!(
+        chat.feed(frame(
+            2,
+            Event::ItemCompleted {
+                item: action_item(None, "nobody asked"),
+            },
+        )),
+        []
+    );
+}
+
+fn action_item(intent: Option<IntentId>, receipt: &str) -> bingo_sdk::Item {
+    bingo_sdk::Item {
+        intent,
+        body: ItemBody::Action {
+            name: "login".into(),
+            args: serde_json::json!("anthropic"),
+            result: Some(serde_json::json!(receipt)),
+        },
+        ..assistant("itm_1", "", bingo_sdk::ItemStatus::Completed)
+    }
 }
 
 #[test]

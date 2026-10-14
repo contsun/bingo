@@ -6,6 +6,9 @@
 //! counts UTF-16 units. A limit without its unit is a limit that is wrong on
 //! three platforms out of four, so the unit travels with the number.
 
+use schemars::JsonSchema;
+use serde::Deserialize;
+
 /// How a platform measures the length of a message.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Encoding {
@@ -49,11 +52,31 @@ impl Dialect {
     }
 }
 
+/// The language a platform's own copy answers in.
+///
+/// It defaults to English, which is what every surface of this product is
+/// written in (AGENTS.md: UI copy is English), so a channel that says nothing
+/// about it behaves exactly as it did. A conversation that is not English sets
+/// it and its *platform-owned* text — the labels a chat surface supplies for
+/// an answer's footer is the one there is today — is said again in its own
+/// words. What a command answers is written by the plugin that owns it and is
+/// never touched here: one locale table per plugin is a second vocabulary to
+/// keep in step, and the plugins are the ones that own those words.
+#[derive(Clone, Copy, Debug, Default, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Locale {
+    #[default]
+    En,
+    Zh,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Limits {
     /// The longest one message may be, and the unit it is counted in.
     pub max_text: (usize, Encoding),
     pub dialect: Dialect,
+    /// The language this platform's own copy is written in.
+    pub locale: Locale,
     /// The most buttons one question may carry.
     pub max_actions: usize,
     /// The longest one button label may be, in characters.
@@ -104,6 +127,7 @@ mod tests {
         Limits {
             max_text: (max, encoding),
             dialect: Dialect::Markdown,
+            locale: Locale::En,
             max_actions: 4,
             max_label: 8,
         }

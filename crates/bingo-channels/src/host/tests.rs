@@ -1,5 +1,6 @@
 mod controls;
 mod kernel;
+mod words;
 
 use std::collections::BTreeSet;
 use std::time::Duration;
@@ -613,14 +614,14 @@ async fn stopping_keeps_the_streamed_answer_and_posts_a_notice_separately() {
         let records = chat.loopback.records();
         records
             .iter()
-            .any(|record| matches!(record, Record::Send { text, mode: Mode::Once, .. } if text == "任务已停止。"))
+            .any(|record| matches!(record, Record::Send { text, mode: Mode::Once, .. } if text == "the turn was stopped."))
             .then_some(records)
     })
     .await;
     assert!(
         !records
             .iter()
-            .any(|record| matches!(record, Record::Finish { text, .. } if text == "任务已停止。")),
+            .any(|record| matches!(record, Record::Finish { text, .. } if text == "the turn was stopped.")),
         "stopping must not overwrite the streamed answer: {records:?}"
     );
 

@@ -10,10 +10,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use bingo_sdk::{
-    Activation, Answer, Applied, Attachment, CancelReason, ClientIdentity, Delivery, ErrorCode,
-    Event, Frame, FrameStream, HostHandle, Image, Input, IntentId, InteractionId, KernelError,
-    OpenOptions, Origin, SessionChange, SessionHandle, SessionId, SessionSelector, SessionSpec,
-    SessionState,
+    Activation, Answer, Applied, Attachment, CancelReason, Catalog, CatalogKind, ClientIdentity,
+    Delivery, ErrorCode, Event, Frame, FrameStream, HostHandle, Image, Input, IntentId,
+    InteractionId, KernelError, OpenOptions, Origin, SessionChange, SessionHandle, SessionId,
+    SessionSelector, SessionSpec, SessionState,
 };
 use futures::StreamExt;
 use tokio::sync::mpsc;
@@ -24,6 +24,7 @@ use crate::deliver::{Deliverer, Op};
 use crate::directory::{Directory, Seat};
 use crate::error::ChannelError;
 use crate::gate::Gate;
+use crate::limits::Locale;
 use crate::question::{Question, Settled, withdrawn};
 
 /// The surface id, and the `Origin.surface` of everything a chat submits.
@@ -459,7 +460,14 @@ impl Runner {
             Some(ChannelCommand::Stop) => return self.stop().await,
             None => {}
         }
-        match self.answering(&text) {
+        // A command is never an answer, even where the question says words of
+        // one's own are allowed (see `spoke_a_command`).
+        let answering = if spoke_a_command(&self.host, &self.key, &text).await {
+            None
+        } else {
+            self.answering(&text)
+        };
+        match answering {
             Some((id, answer)) => self.settles(id, answer).await,
             None => {
                 let intent = IntentId::mint();
@@ -485,10 +493,15 @@ impl Runner {
     async fn stop(&mut self) {
         self.handle
             .interrupt(IntentId::mint(), bingo_sdk::InterruptScope::Head);
-        if let Err(error) = self.post("任务已停止。").await {
+        if let Err(error) = self.post(self.notice(Notice::TurnStopped)).await {
             tracing::warn!(%error, key = %self.key, "the stop notice could not be sent");
         }
         self.ended(false).await;
+    }
+
+    /// One of this surface's own lines, in the conversation's language.
+    fn notice(&self, notice: Notice) -> &'static str {
+        notice.said(self.adapter.limits().locale)
     }
 
     async fn new_session(&mut self) {
@@ -499,7 +512,7 @@ impl Runner {
             .await
         {
             tracing::warn!(%error, key = %self.key, "the old session could not release its route");
-            if let Err(error) = self.post("新会话开启失败。").await {
+            if let Err(error) = self.post(self.notice(Notice::SessionFailed)).await {
                 tracing::warn!(%error, key = %self.key, "the new-session failure notice could not be sent");
             }
             return;
@@ -522,14 +535,14 @@ impl Runner {
                         "the old session route could not be restored"
                     );
                 }
-                if let Err(error) = self.post("新会话开启失败。").await {
+                if let Err(error) = self.post(self.notice(Notice::SessionFailed)).await {
                     tracing::warn!(%error, key = %self.key, "the new-session failure notice could not be sent");
                 }
                 return;
             }
         };
         self.replace_attachment(attachment);
-        if let Err(error) = self.post("新会话已开启。").await {
+        if let Err(error) = self.post(self.notice(Notice::SessionOpened)).await {
             tracing::warn!(%error, key = %self.key, "the new-session notice could not be sent");
         }
     }
@@ -543,7 +556,7 @@ impl Runner {
             .interrupt(IntentId::mint(), bingo_sdk::InterruptScope::Head);
         let ops = self.deliverer.finish_stream();
         self.perform(ops).await;
-        if let Err(error) = self.post("任务已停止。").await {
+        if let Err(error) = self.post(self.notice(Notice::TurnStopped)).await {
             tracing::warn!(%error, key = %self.key, "the old-turn notice could not be sent");
         }
         self.ended(false).await;
@@ -634,6 +647,68 @@ impl Runner {
     fn answer(&self, id: InteractionId, answer: Answer) {
         self.handle
             .answer(IntentId::mint(), id, answer, Activation::Pointer);
+    }
+}
+
+/// The words this surface owns, and the only ones a locale reaches: what a
+/// control answers with. English is the product's own copy (AGENTS.md) and
+/// the default, so a chat that says nothing about its language is unchanged.
+/// A command's *result* is not here — that is written by the plugin that owns
+/// it, and one locale table per plugin would be a second vocabulary to keep
+/// in step with the first.
+#[derive(Clone, Copy)]
+enum Notice {
+    SessionOpened,
+    SessionFailed,
+    TurnStopped,
+}
+
+impl Notice {
+    fn said(self, locale: Locale) -> &'static str {
+        match (self, locale) {
+            (Notice::SessionOpened, Locale::En) => "new session opened.",
+            (Notice::SessionFailed, Locale::En) => "the new session could not open.",
+            (Notice::TurnStopped, Locale::En) => "the turn was stopped.",
+            (Notice::SessionOpened, Locale::Zh) => "新会话已开启。",
+            (Notice::SessionFailed, Locale::Zh) => "新会话开启失败。",
+            (Notice::TurnStopped, Locale::Zh) => "任务已停止。",
+        }
+    }
+}
+
+/// The command a line names, or nothing where it names none: a leading slash,
+/// then one word and no argument. `/new` and `/new now` both name `new`;
+/// `/tmp is here` and a bare `/` do not.
+fn command_name(text: &str) -> Option<String> {
+    let rest = text.trim_start().strip_prefix('/')?;
+    let name = rest.split(char::is_whitespace).next()?;
+    (!name.is_empty()).then(|| format!("/{name}"))
+}
+
+/// Whether this message is one the kernel will run as a command.
+///
+/// A command is as long as the line, so it is never an answer, whatever the
+/// open question said it would accept: a login asks for a pasted key as free
+/// text (`AnswerSpec::Text`), and without this the `/status` typed while that
+/// dialog waits is taken as the key, the dialog closes on a command line and
+/// the command is never run. Only a name the kernel really has counts — a
+/// directory the person is asking about, `/tmp`, is prose and still answers
+/// the question put to them.
+async fn spoke_a_command(host: &HostHandle, key: &str, text: &str) -> bool {
+    let Some(name) = command_name(text) else {
+        return false;
+    };
+    match host.catalog(CatalogKind::Commands).await {
+        Ok(Catalog { entries, .. }) => entries
+            .into_iter()
+            .any(|entry| entry.id == name.trim_start_matches('/')),
+        Err(error) => {
+            // Unreachable while the session is open, and a message misread as
+            // an answer is worse than one read as prose: say so and let the
+            // words answer what is being asked.
+            tracing::warn!(%error, key, "the command catalogue could not be read");
+            false
+        }
     }
 }
 

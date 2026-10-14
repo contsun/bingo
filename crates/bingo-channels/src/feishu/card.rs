@@ -103,7 +103,7 @@ fn markdown(content: &str) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::limits::{Dialect, Encoding};
+    use crate::limits::{Dialect, Encoding, Locale};
     use crate::question::Choice;
     use bingo_sdk::{Answer, InteractionId};
 
@@ -111,6 +111,7 @@ mod tests {
         Limits {
             max_text: (20_000, Encoding::Utf8Bytes),
             dialect: Dialect::Markdown,
+            locale: Locale::En,
             max_actions: 4,
             max_label: 30,
         }

@@ -110,7 +110,7 @@ impl Actor {
                 self.applied(intent, json!({ "view": view })).await
             }
             Ok(CommandOutcome::Record { body }) => {
-                let item = self.record(body).await;
+                let item = self.record_for(Some(intent.clone()), body).await;
                 self.applied(intent, json!({ "item": item })).await;
             }
             Ok(CommandOutcome::Prompt { text }) => {

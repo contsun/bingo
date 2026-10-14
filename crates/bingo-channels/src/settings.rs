@@ -18,7 +18,7 @@ use crate::access::Access;
 use crate::adapter::ChannelAdapter;
 use crate::feishu::{self, Feishu};
 use crate::gate::Gate;
-use crate::limits::{Dialect, Encoding, Limits};
+use crate::limits::{Dialect, Encoding, Limits, Locale};
 use crate::loopback::{self, Loopback};
 
 /// The top-level key this plugin owns.
@@ -79,6 +79,10 @@ pub struct LoopbackChannel {
     /// a group engages on a mention, which is what ran before.
     #[serde(default)]
     pub access: Access,
+    /// The language the surface's own copy answers in — `en` (the default) or
+    /// `zh`.
+    #[serde(default)]
+    pub locale: Locale,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, JsonSchema)]
@@ -100,6 +104,11 @@ pub struct FeishuChannel {
     /// `/clear` and `/stop` to `esc`.
     #[serde(default)]
     pub command_mappings: BTreeMap<String, String>,
+    /// The language this bot's own copy answers in — `en` (the default) or
+    /// `zh`. A conversation whose people read Chinese says so here and the
+    /// words this surface owns come back in Chinese.
+    #[serde(default)]
+    pub locale: Locale,
 }
 
 /// Where an attachment a Feishu message carried lands, under the data
@@ -134,6 +143,7 @@ impl FeishuChannel {
                 .join(Feishu::ID)
                 .join(ATTACHMENTS),
             command_mappings: self.command_mappings.clone(),
+            locale: self.locale,
         }
     }
 }
@@ -227,6 +237,7 @@ impl LoopbackChannel {
             limits: Limits {
                 max_text: (self.max_text, Encoding::Chars),
                 dialect: Dialect::Markdown,
+                locale: self.locale,
                 max_actions: self.max_actions,
                 max_label: 40,
             },

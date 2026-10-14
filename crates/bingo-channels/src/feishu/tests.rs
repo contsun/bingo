@@ -36,6 +36,7 @@ async fn feishu(server: &MockServer) -> Feishu {
         base: server.uri(),
         attachments: std::path::PathBuf::from("/nonexistent-bingo-feishu-attachments"),
         command_mappings: BTreeMap::new(),
+        locale: crate::limits::Locale::En,
     })
 }
 
@@ -142,6 +143,7 @@ async fn a_channel_with_no_credential_refuses_before_it_dials() {
         base: "http://127.0.0.1:1".into(),
         attachments: std::path::PathBuf::from("/nonexistent-bingo-feishu-attachments"),
         command_mappings: BTreeMap::new(),
+        locale: crate::limits::Locale::En,
     });
     let (post, _arrivals) = tokio::sync::mpsc::channel(1);
     let error = bare
@@ -166,6 +168,7 @@ fn terminal_controls_have_feishu_command_defaults() {
         base: "http://127.0.0.1:1".into(),
         attachments: std::path::PathBuf::from("/nonexistent-bingo-feishu-attachments"),
         command_mappings: BTreeMap::new(),
+        locale: crate::limits::Locale::En,
     });
     assert_eq!(feishu.command("/new"), Some(ChannelCommand::NewSession));
     assert_eq!(feishu.command("/stop"), Some(ChannelCommand::Stop));
@@ -185,6 +188,7 @@ fn terminal_controls_can_be_extended_from_feishu_settings() {
             ("/fresh".into(), "/clear".into()),
             ("halt".into(), "escape".into()),
         ]),
+        locale: crate::limits::Locale::En,
     });
     assert_eq!(feishu.command("/fresh"), Some(ChannelCommand::NewSession));
     assert_eq!(feishu.command("/halt"), Some(ChannelCommand::Stop));

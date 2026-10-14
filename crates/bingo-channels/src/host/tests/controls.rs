@@ -8,7 +8,7 @@ async fn switched(chat: &Chat) -> Vec<Record> {
             .any(|record| {
                 matches!(record,
                     Record::Send { text, .. } | Record::Reply { text, .. }
-                        if text == "新会话已开启。"
+                        if text == "new session opened."
                 )
             })
             .then_some(records)
@@ -62,7 +62,7 @@ async fn a_new_session_preserves_the_previous_streamed_answer() {
     );
     assert!(
         records.iter().any(|record| matches!(record,
-            Record::Send { text, mode: Mode::Once, .. } if text == "任务已停止。"
+            Record::Send { text, mode: Mode::Once, .. } if text == "the turn was stopped."
         )),
         "the stop notice is a separate message: {records:?}"
     );
@@ -128,7 +128,7 @@ async fn a_new_session_notice_replies_in_the_originating_thread() {
     assert!(
         records.iter().any(|record| matches!(record,
             Record::Reply { to, parent: at, text, .. }
-                if to == &conversation && at == &parent && text == "新会话已开启。"
+                if to == &conversation && at == &parent && text == "new session opened."
         )),
         "the new-session notice retains its reply parent: {records:?}"
     );

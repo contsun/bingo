@@ -162,6 +162,7 @@ impl Deliverer {
         match &frame.event {
             Event::TurnStarted { turn, .. } => self.started(turn.clone()),
             Event::ItemCompleted { item } if is_shell(item) => self.ran(item),
+            Event::ItemCompleted { item } if is_action(item) => self.recorded(item),
             Event::ItemStarted { .. }
             | Event::ItemUpdated { .. }
             | Event::ItemCompleted { .. }
@@ -199,6 +200,35 @@ impl Deliverer {
             }],
             _ => Vec::new(),
         }
+    }
+
+    /// What an action this chat asked for has to say — a login's receipt, a
+    /// reconnect's outcome. A shell line already reaches the chat as a status
+    /// (`ran`), and its item is all a surface is shown; an action has no such
+    /// line, so a `/login` that worked answers nothing at all unless it is
+    /// said here. Only an item this chat's own write produced is reported, so
+    /// a receipt earned elsewhere is not spoken for here.
+    fn recorded(&mut self, item: &bingo_sdk::Item) -> Vec<Op> {
+        let ItemBody::Action { result, .. } = &item.body else {
+            return Vec::new();
+        };
+        if !self.owes(item.intent.as_ref()) {
+            return Vec::new();
+        }
+        let Some(receipt) = result.as_ref().and_then(Value::as_str) else {
+            return Vec::new();
+        };
+        (!receipt.trim().is_empty())
+            .then(|| Op::Card {
+                text: self.laid_out(receipt),
+            })
+            .into_iter()
+            .collect()
+    }
+
+    /// Whether this chat is still waiting on the write that made an item.
+    fn owes(&self, intent: Option<&IntentId>) -> bool {
+        intent.is_some_and(|intent| self.pending.iter().any(|pending| pending == intent))
     }
 
     /// What a command said, in the words this chat can carry: its message,
@@ -439,6 +469,12 @@ fn answer(state: &SessionState, turn: &TurnId) -> String {
 /// Whether this item is a shell line the person ran themselves.
 fn is_shell(item: &bingo_sdk::Item) -> bool {
     matches!(item.body, ItemBody::Shell { .. })
+}
+
+/// A long-running operation that is not a turn — a login, a reconnect — whose
+/// receipt has no line of its own in a chat.
+fn is_action(item: &bingo_sdk::Item) -> bool {
+    matches!(item.body, ItemBody::Action { .. })
 }
 
 /// What a turn's end is worth saying, if anything.

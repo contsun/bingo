@@ -99,6 +99,8 @@ pub struct Config {
     pub attachments: PathBuf,
     /// Commands this adapter maps to controls owned by another surface.
     pub command_mappings: BTreeMap<String, String>,
+    /// The language this bot's own copy answers in.
+    pub locale: crate::limits::Locale,
 }
 
 pub struct Feishu {
@@ -139,6 +141,7 @@ impl Feishu {
             limits: Limits {
                 max_text: (MAX_TEXT, Encoding::Utf8Bytes),
                 dialect: Dialect::Markdown,
+                locale: config.locale,
                 // Four buttons is what a permission ladder needs and what a
                 // card row shows without wrapping.
                 max_actions: 4,

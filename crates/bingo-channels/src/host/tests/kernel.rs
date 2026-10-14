@@ -140,9 +140,18 @@ pub struct TestHost {
     sessions: Mutex<Vec<Arc<TestSession>>>,
     /// Every selector `open` was called with, in order.
     opened: Mutex<Vec<SessionSelector>>,
+    /// What the kernel answers to: a chat tells a command from prose by
+    /// asking this, so a test that sends one registers it here.
+    commands: Mutex<Vec<String>>,
 }
 
 impl TestHost {
+    /// Register a command name, so a chat reads `/name` as a command and not
+    /// as an answer to whatever question is open.
+    pub fn knows(&self, names: &[&str]) {
+        locked(&self.commands).extend(names.iter().map(|name| name.to_string()));
+    }
+
     pub fn session(&self, key: &str) -> Option<Arc<TestSession>> {
         locked(&self.sessions)
             .iter()
@@ -259,10 +268,18 @@ impl HostApi for TestHost {
     }
 
     async fn catalog(&self, kind: CatalogKind) -> Result<Catalog, KernelError> {
-        Ok(Catalog {
-            kind,
-            entries: Vec::<CatalogEntry>::new(),
-        })
+        let entries = match kind {
+            CatalogKind::Commands => locked(&self.commands)
+                .iter()
+                .map(|id| CatalogEntry {
+                    id: id.trim_start_matches('/').to_string(),
+                    label: id.clone(),
+                    meta: serde_json::Value::Null,
+                })
+                .collect(),
+            _ => Vec::new(),
+        };
+        Ok(Catalog { kind, entries })
     }
 
     fn gateway_events(&self) -> GatewayStream {

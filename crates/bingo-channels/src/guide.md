@@ -30,6 +30,10 @@ intervalMs = 700
 - `commandMappings` (`channels.feishu.commandMappings`) — a map from a Feishu
   command to a terminal control. It defaults to `/new` → `/clear` and `/stop`
   → `esc`; add another source command by mapping it to `/clear` or `esc`.
+- `locale` — the language this bot's own copy answers in: `en` (the default)
+  or `zh`. It reaches only the words this surface writes itself, such as a
+  new-session notice; what a command answers is written by the plugin that
+  owns it and stays as it is.
 - `coalesce` — how often a streaming answer is redrawn: `minChars`
   (48) new characters worth a redraw, `intervalMs` (700) the longest anyone
   waits to see something new.

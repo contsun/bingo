@@ -130,12 +130,13 @@ mod tests {
 
     use super::*;
     use crate::fixtures;
-    use crate::limits::{Dialect, Encoding};
+    use crate::limits::{Dialect, Encoding, Locale};
 
     fn limits(max: usize) -> Limits {
         Limits {
             max_text: (max, Encoding::Utf8Bytes),
             dialect: Dialect::Markdown,
+            locale: Locale::En,
             max_actions: 4,
             max_label: 30,
         }

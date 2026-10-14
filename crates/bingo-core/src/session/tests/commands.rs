@@ -272,8 +272,13 @@ async fn a_record_outcome_is_an_item_and_an_action_dispatches_by_name() {
         panic!("applied");
     };
     let item = ItemId::from_raw(result["item"].as_str().unwrap());
-    assert!(
-        matches!(&state.item(&item).unwrap().body, ItemBody::Action { name, .. } if name == "note")
+    let recorded = state.item(&item).unwrap();
+    assert!(matches!(&recorded.body, ItemBody::Action { name, .. } if name == "note"));
+    assert_eq!(
+        recorded.intent.as_ref(),
+        Some(&intent),
+        "a receipt carries the write that asked for it, so a chat can tell \
+         the one it is owed from one that merely happened"
     );
     assert_eq!(note.calls(), vec![r#"{"k":1}"#.to_string()]);
 }

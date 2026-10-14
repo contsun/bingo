@@ -693,8 +693,16 @@ impl Actor {
     }
 
     async fn record(&mut self, body: ItemBody) -> ItemId {
+        self.record_for(None, body).await
+    }
+
+    /// The same, carrying the write that asked for the item. A command's
+    /// receipt is owed to whoever typed it, and only this says which
+    /// conversation that was: without it a chat cannot tell a receipt it is
+    /// owed (ADR-0008 §3) from one that merely happened.
+    async fn record_for(&mut self, intent: Option<IntentId>, body: ItemBody) -> ItemId {
         let turn = self.running.as_ref().map(|r| r.turn.clone());
-        let item = self.fresh(turn, None, body);
+        let item = self.fresh(turn, intent, body);
         let id = item.id.clone();
         self.publish(Event::ItemCompleted { item }, None).await;
         id

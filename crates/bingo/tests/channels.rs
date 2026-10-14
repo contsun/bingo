@@ -203,7 +203,7 @@ async fn a_new_session_keeps_the_thread_and_answers_the_next_message() {
         .await;
     let ops = chat
         .peer
-        .until(|op| op["text"] == json!("新会话已开启。"))
+        .until(|op| op["text"] == json!("new session opened."))
         .await;
     let notice = ops.last().expect("the new-session notice");
     assert!(
@@ -706,5 +706,53 @@ async fn a_path_that_is_not_there_is_refused_in_words_the_model_reads() {
     assert!(
         !ops.iter().any(|op| is(op, "file")),
         "nothing was posted: {ops:#?}"
+    );
+}
+
+/// A script whose first response asks a question that takes words of one's
+/// own, and whose later response is addressed to whatever the command left.
+const ASKS_WITH_WORDS: &str = r#"{"responses":[
+    {"steps":[{"toolCall":{"name":"AskUserQuestion","input":{"questions":[
+        {"question":"Which store?","header":"Store","options":[
+            {"label":"Postgres","description":"the one we run"},
+            {"label":"SQLite","description":"the one on disk"}]}]}}}]},
+    {"when":{"contains":"Postgres"},"steps":[{"text":"Postgres it is."}]}
+]}"#;
+
+/// A command typed while a question that accepts words of one's own is waiting
+/// is the command, not the answer. The dialog stays open and the command runs:
+/// before this, `/status` was taken as the answer, the dialog closed on a
+/// command line and the command never ran.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_command_typed_while_a_question_waits_runs_instead_of_answering_it() {
+    let mut chat = Chat::open(ASKS_WITH_WORDS, json!({})).await;
+    chat.peer.chats("oc_1", "which store?").await;
+    let ops = chat.peer.until(|op| is(op, "ask")).await;
+    let asked = ops.last().expect("the question");
+    assert!(
+        asked["prompt"].as_str().unwrap().contains("Which store?"),
+        "{asked}"
+    );
+
+    // `/status` is a command this kernel has. Typed at the dialog, it must run
+    // as one — and answer nothing.
+    chat.peer.chats("oc_1", "/status").await;
+    let ops = chat
+        .peer
+        .until(|op| {
+            is(op, "finish")
+                && op["text"]
+                    .as_str()
+                    .is_some_and(|text| text.contains("session:"))
+        })
+        .await;
+    let result = ops.last().expect("the command answered");
+    assert!(
+        result["text"].as_str().unwrap().contains("cwd:"),
+        "the status view, not a settlement: {result}"
+    );
+    assert!(
+        !ops.iter().any(|op| is(op, "settle")),
+        "the dialog did not settle on a command line: {ops:#?}"
     );
 }
